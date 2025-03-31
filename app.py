@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for
 import threading
 import time
+import pandas as pd
 
 app = Flask(__name__)
 
@@ -19,12 +20,14 @@ def dashboard():
 def add_room():
     if request.method == 'POST':
         name = request.form.get('roomName')
+        room_size = request.form.get('roomSize')
         zone = request.form.get('zone')
 
         if name:
             from random import uniform, choice
             room = {
                 'name': name,
+                'room_size': int(room_size),
                 'zone': zone,
                 'temperature': round(uniform(65, 75), 1),
                 'humidity': round(uniform(35, 55), 1),
@@ -61,7 +64,7 @@ def config_home():
         return redirect(url_for('config_home'))
 
     return render_template('config_home.html', zones=zones, rates=utility_rates)
-    
+
 @app.route('/demo')
 def demo():
     global rooms, zones
@@ -69,27 +72,29 @@ def demo():
     # Clear existing rooms and zones
     rooms.clear()
     zones.clear()
-
+    
+    file_path = "data-analytics/roommate_data/roommates_occupancy.csv"
+    data = pd.read_csv(file_path)
+    
     # Add zones
-    zones.append({'name': 'Lower', 'description': 'Lower floor'})
-    zones.append({'name': 'Upper', 'description': 'Upper floor'})
+    unique_zones = data['zone'].unique()
+    for zone in unique_zones:
+        zones.append({'name': f'Zone {zone}', 'description': f'Zone {zone} description'})
+    
 
-    # Add rooms to the lower floor
-    rooms.extend([
-        {'name': 'Living Room', 'zone': 'Lower', 'temperature': 70, 'humidity': 40, 'occupancy': True, 'heating_source': 'Electric Heater'},
-        {'name': 'Kitchen', 'zone': 'Lower', 'temperature': 72, 'humidity': 45, 'occupancy': True, 'heating_source': 'Electric Heater'},
-        {'name': 'Dining Room', 'zone': 'Lower', 'temperature': 68, 'humidity': 42, 'occupancy': False, 'heating_source': 'Off'}
-    ])
-
-    # Add rooms to the upper floor
-    rooms.extend([
-        {'name': 'Bedroom 1', 'zone': 'Upper', 'temperature': 65, 'humidity': 38, 'occupancy': False, 'heating_source': 'Off'},
-        {'name': 'Bedroom 2', 'zone': 'Upper', 'temperature': 67, 'humidity': 40, 'occupancy': True, 'heating_source': 'Furnace'},
-        {'name': 'Bedroom 3', 'zone': 'Upper', 'temperature': 66, 'humidity': 39, 'occupancy': False, 'heating_source': 'Off'},
-        {'name': 'Bedroom 4', 'zone': 'Upper', 'temperature': 68, 'humidity': 41, 'occupancy': True, 'heating_source': 'Electric Heater'}
-    ])
-
+    unique_rooms = data.groupby('room').first().reset_index()
+    for _, row in unique_rooms.iterrows():
+        room = {
+            'name': row['room'],
+            'zone': f'Zone {row["zone"]}',
+            'temperature': 72,  # Default temperature
+            'humidity': 44,     # Default humidity
+            'occupancy': bool(row['occupancy']),
+            'heating_source': 'Furnace' if row['occupancy'] else 'Off'
+        }
+        rooms.append(room)
     return redirect(url_for('dashboard'))
+
 def update_heating_sources():
     while True:
         for room in rooms:
@@ -97,7 +102,7 @@ def update_heating_sources():
                 room['heating_source'] = 'Furnace'
             else:
                 room['heating_source'] = 'Off'
-        time.sleep(60)
+        time.sleep(1)
 
 threading.Thread(target=update_heating_sources, daemon=True).start()
 
