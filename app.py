@@ -89,8 +89,8 @@ def demo():
             'zone': f'Zone {row["zone"]}',
             'temperature': 72,  # Default temperature
             'humidity': 44,     # Default humidity
-            'occupancy': bool(row['occupancy']),
-            'heating_source': 'Furnace' if row['occupancy'] else 'Off'
+            'occupancy': bool(row['occupied']),
+            'heating_source': 'Furnace' if row['occupied'] else 'Off'
         }
         rooms.append(room)
     return redirect(url_for('dashboard'))
