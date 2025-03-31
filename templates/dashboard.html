@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>IntelliWarm Dashboard</title>
+  <script>
+    // Refresh the page every 60 seconds
+    setTimeout(function() {
+        window.location.reload();
+    }, 60000);
+  </script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Segoe+UI&display=swap">
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      background: #f0f2f5;
+    }
+
+    header {
+      background: #2c3e50;
+      color: white;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .top-nav {
+      text-align: center;
+      margin: 10px;
+    }
+
+    .top-nav a {
+      margin: 0 15px;
+      text-decoration: none;
+      color: #2c3e50;
+      font-weight: bold;
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+      padding: 20px;
+    }
+
+    .room-card {
+      background: white;
+      border-radius: 10px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+      padding: 20px;
+    }
+
+    .room-title {
+      font-size: 1.2em;
+      font-weight: bold;
+    }
+
+    .metric {
+      margin: 8px 0;
+    }
+
+    .metric span {
+      font-weight: bold;
+    }
+
+    .status-on {
+      color: green;
+      font-weight: bold;
+    }
+
+    .status-off {
+      color: red;
+      font-weight: bold;
+    }
+
+    .footer {
+      text-align: center;
+      padding: 20px;
+      color: #777;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>IntelliWarm Dashboard</h1>
+  </header>
+
+  <div class="top-nav">
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('add_room') }}">Add Room</a>
+    <a href="{{ url_for('config_home') }}">Configure Home</a>
+    <a href="{{ url_for('demo') }}">Demo</a>
+  </div>
+
+  <main class="dashboard">
+    {% for room in rooms %}
+    <div class="room-card">
+      <div class="room-title">{{ room.name }} ({{ room.zone }})</div>
+      <div class="metric">Temperature: <span>{{ room.temperature }}°F</span></div>
+      <div class="metric">Humidity: <span>{{ room.humidity }}%</span></div>
+      <div class="metric">Occupancy:
+        <span class="{{ 'status-on' if room.occupancy else 'status-off' }}">
+          {{ 'Occupied' if room.occupancy else 'Unoccupied' }}
+        </span>
+      </div>
+      <div class="metric">Heating Source: <span>{{ room.heating_source }}</span></div>
+    </div>
+    {% endfor %}
+  </main>
+
+  <div class="footer">
+    IntelliWarm © 2025 • Nico Bartello & Uday Atragada
+  </div>
+</body>
+
+</html>

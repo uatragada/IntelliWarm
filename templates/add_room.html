@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Add Room - IntelliWarm</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            margin: 0;
+            background: #f0f2f5;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .top-nav {
+            text-align: center;
+            margin: 10px;
+        }
+
+        .top-nav a {
+            margin: 0 15px;
+            text-decoration: none;
+            color: #2c3e50;
+            font-weight: bold;
+        }
+
+        .form-container {
+            background: white;
+            margin: 30px auto;
+            max-width: 500px;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        label {
+            display: block;
+            margin-top: 10px;
+            margin-bottom: 5px;
+        }
+
+        input,
+        select {
+            width: 100%;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+        }
+
+        button {
+            margin-top: 15px;
+            padding: 10px 20px;
+            background-color: #2c3e50;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #1b2734;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #777;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>Add New Room</h1>
+    </header>
+
+    <div class="top-nav">
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('add_room') }}">Add Room</a>
+        <a href="{{ url_for('config_home') }}">Configure Home</a>
+    </div>
+
+    <div class="form-container">
+        <form method="POST">
+            <label for="roomName">Room Name:</label>
+            <input type="text" name="roomName" required>
+
+            <label for="zone">Zone:</label>
+            <select name="zone">
+                {% for zone in zones %}
+                <option value="{{ zone.name }}">{{ zone.name }}</option>
+                {% endfor %}
+            </select>
+
+            <button type="submit">Add Room</button>
+        </form>
+    </div>
+
+    <div class="footer">
+        IntelliWarm © 2025 • Nico Bartello & Uday Atragada
+    </div>
+</body>
+
+</html>
