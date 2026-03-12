@@ -277,12 +277,24 @@ class ZoneConfig:
 
     @property
     def furnace_therms_per_hour(self) -> float:
-        """Gas consumption rate in therms/hour at rated output."""
+        """Gas consumption rate in therms/hour at rated *input* capacity.
+
+        ``furnace_btu_per_hour`` is the INPUT BTU/hr (gas burned), following
+        the standard HVAC/AHRI convention where a "20,000 BTU furnace" refers
+        to gas consumption, not heat delivered.  Heat delivered = input × AFUE.
+        """
         return self.furnace_btu_per_hour / 100_000.0
 
     def hourly_gas_cost(self, gas_price_per_therm: float) -> float:
-        """Cost in $/hr to run the furnace at full output."""
-        return (self.furnace_therms_per_hour / self.furnace_efficiency) * gas_price_per_therm
+        """Cost in $/hr to run the furnace at rated input capacity.
+
+        Since ``furnace_btu_per_hour`` is already the INPUT (gas burned),
+        the cost is simply therms_consumed × price.  No AFUE division is
+        needed here — AFUE only affects *heat output*, which is handled by
+        the thermal model (``from_room_config`` multiplies by AFUE to obtain
+        the heat delivered to the zone).
+        """
+        return self.furnace_therms_per_hour * gas_price_per_therm
 
 
 @dataclass(frozen=True)

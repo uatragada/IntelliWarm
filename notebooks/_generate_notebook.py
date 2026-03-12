@@ -147,14 +147,14 @@ ZONES: Dict[str, ZoneConfig] = {
         zone_id="Main",
         description="Living areas — living room and kitchen",
         has_furnace=True,
-        furnace_btu_per_hour=80_000.0,
+        furnace_btu_per_hour=20_000.0,  # INPUT BTU/hr (zone-level; matches ~3.5 kW electric capacity)
         furnace_efficiency=0.80,
     ),
     "Sleeping": ZoneConfig(
         zone_id="Sleeping",
         description="Bedrooms — master and kids",
         has_furnace=True,
-        furnace_btu_per_hour=60_000.0,
+        furnace_btu_per_hour=15_000.0,  # INPUT BTU/hr (zone-level; matches ~2.5 kW electric capacity)
         furnace_efficiency=0.85,
     ),
     "Office": ZoneConfig(
