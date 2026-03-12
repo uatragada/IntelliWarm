@@ -4,17 +4,25 @@ Use these instructions for GitHub Copilot CLI autopilot and chat-based implement
 
 ## Project Intent
 
-IntelliWarm is a Python and Flask project for intelligent HVAC optimization targeting real-world deployment. Simulation remains a required capability for deterministic validation, but implementation slices should move the system toward safe operation with real hardware.
+IntelliWarm is a real-world HVAC cost minimization platform for homes and buildings with hybrid heating systems — a gas furnace that heats entire zones and electric space heaters that heat individual rooms. The platform decides in real time which source is cheaper, controls the appropriate hardware, and records the cost outcome.
+
+Simulation is a required capability for deterministic validation and offline development. Every feature must run in both simulation mode and live hardware mode using shared action and forecast contracts.
+
+**The central cost-saving mechanism is `HybridController` in `intelliwarm/control/hybrid_controller.py`. All new zone heating work must route through it.**
 
 ## Source Of Truth
 
-- Runtime orchestration: `intelliwarm/services/runtime.py`
-- Thermal model: `intelliwarm/models/thermal_model.py`
-- Simulation primitives: `intelliwarm/data/models.py`
-- Multi-room simulator: `intelliwarm/models/simulator.py`
-- Occupancy prediction: `intelliwarm/prediction/occupancy_model.py`
-- Current storage layer: `intelliwarm/storage/database.py`
-- Current plan and sequencing: `docs/roadmap.md`
+- **Hybrid cost engine**: `intelliwarm/control/hybrid_controller.py`
+- **Hybrid domain types**: `intelliwarm/data/models.py` (`HeatSourceType`, `ZoneConfig`, `HybridHeatingDecision`)
+- **Runtime orchestration**: `intelliwarm/services/runtime.py`
+- **Per-room baseline**: `intelliwarm/control/baseline_controller.py`
+- **Device actuation boundary**: `intelliwarm/control/device_controller.py`
+- **Thermal model**: `intelliwarm/models/thermal_model.py`
+- **Simulation primitives**: `intelliwarm/data/models.py`
+- **Multi-room simulator**: `intelliwarm/models/simulator.py`
+- **Occupancy prediction**: `intelliwarm/prediction/occupancy_model.py`
+- **Current storage layer**: `intelliwarm/storage/database.py`
+- **Current plan and sequencing**: `docs/roadmap.md`
 
 ## Required Working Style
 
@@ -31,10 +39,14 @@ IntelliWarm is a Python and Flask project for intelligent HVAC optimization targ
 
 - Extend the current package layout; do not perform a broad package rename.
 - Reuse existing modules before creating new ones.
-- Baseline and MPC should converge on shared action and forecast contracts.
+- **Zone heating decisions must go through `HybridController.decide()` — do not call `BaselineController` directly from services or routes.**
+- Baseline generates per-room heat needs as inputs to `HybridController`; it is not a standalone zone controller.
+- MPC and baseline should converge on shared `HybridHeatingDecision` and `ForecastBundle` contracts.
 - Dashboard logic should consume service outputs, not internal model details.
 - Hardware-specific code should remain in adapter/integration boundaries, not optimizer internals.
 - Storage changes should remain compatible with the current SQLite workflow unless migration is explicitly requested.
+- Energy prices passed to `HybridController` must be live values in production mode; static config prices are fallback only.
+- When `furnace_on is True`, the `DeviceController` must suppress all per-room electric commands for that zone.
 
 ## Testing Rules
 
@@ -48,13 +60,12 @@ pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules
 
 ## Priority Order
 
-1. Baseline controller and explanation model.
-2. Forecast bundle service.
-3. Hardware integration boundary for sensors and device control.
-4. Route modularization.
-5. Typed config and validation.
-6. Persistence/reporting improvements.
-7. Live runtime safety and observability.
+1. **Wire `HybridController` into `IntelliWarmRuntime.optimize_heating_plan()` — make the cost savings real in the running system.**
+2. Add furnace actuation to `DeviceController` — distinguish zone furnace relay from per-room electric commands.
+3. Dashboard: surface `HybridHeatingDecision` output — heat source choice, cost comparison, rationale.
+4. Load `ZoneConfig` from `configs/config.yaml` into runtime so `HybridController` instances are built at startup.
+5. Replace static energy price stub with live gas and electricity provider APIs.
+6. Deepen operational hardening: reporting, dashboards, and live safety checks.
 
 ## Avoid
 
@@ -64,6 +75,9 @@ pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules
 - Live API calls inside optimizer or simulator code.
 - Direct hardware I/O in route handlers.
 - Unbounded tasks that mix architecture, UI, storage, and control changes together.
+- Bypassing `HybridController` by calling `BaselineController` per room in services — this defeats the core cost-saving logic.
+- Hard-coding energy prices in `HybridController` — prices must be injected at call time.
+- Activating both furnace and electric heaters for the same zone simultaneously.
 
 ## Preferred Task Pattern
 
