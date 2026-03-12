@@ -128,6 +128,22 @@
 - the CLI reuses the deterministic scenario library and evaluation helpers rather than reimplementing rollout logic
 - regression coverage verifies named-policy lookup and JSON output for scenario-batch runs
 
+### Physics Thermal Model
+
+- `solar_irradiance_wm2()` added to `thermal_model.py`: astronomical clear-sky model (Kasten air-mass, Bird-Hulstrom transmittance, eccentricity correction, Kasten-Czeplak cloud correction) accurate within ~10 % of measured GHI for typical mid-latitude sites
+- `PhysicsRoomThermalModel` added alongside the legacy `RoomThermalModel`:
+  - lumped thermal capacitance governing equation: `C·dT/dt = UA·(T_out − T) + Q_hvac + Q_solar + Q_occ`
+  - parameters: `thermal_capacitance_kj_k`, `conductance_ua_w_k`, `hvac_power_w`, `solar_aperture_m2`, `occupant_gain_w`
+  - sub-step forward-Euler integration (`N_SUBSTEPS = 6`) for hourly accuracy without a stiff solver
+  - `from_room_config()` factory derives physical params from `RoomConfig` using a documented 45 W/m³ design-load heuristic
+  - `time_constant_hours` and `steady_state_delta_t` convenience properties
+  - fully backward-compatible `step()` / `simulate()` API (accepts same kwargs as legacy model)
+- `HouseSimulator` updated to forward `solar_irradiance_w_m2` and per-room `occupancy` into each `step()` call; solar is computed from the simulation timestamp using the built-in astronomical model
+- `HouseSimulator` now accepts `latitude_deg` and `cloud_cover` constructor parameters for site-specific solar simulation
+- `PhysicsRoomThermalModel` and `solar_irradiance_wm2` exported from `intelliwarm/models/__init__.py`
+- 29 new tests in `tests/test_thermal_physics_model.py` covering passive cooling, HVAC heating, solar gain, occupancy heat, steady-state accuracy, RC time constant, factory method, simulator integration, and solar irradiance day/night/seasonal/cloud behaviour
+- all 75 tests pass
+
 ---
 
 ## Active Next Priority Order

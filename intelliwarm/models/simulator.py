@@ -8,21 +8,41 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from intelliwarm.data import HeatingAction, RoomConfig, SimulationState
+from intelliwarm.models.thermal_model import solar_irradiance_wm2
 from intelliwarm.prediction import OccupancyPredictor
 
 
 class HouseSimulator:
-    """Advance room temperatures for a collection of rooms over fixed timesteps."""
+    """Advance room temperatures for a collection of rooms over fixed timesteps.
+
+    When the thermal model for a room accepts ``solar_irradiance_w_m2`` and
+    ``occupancy`` keyword arguments (i.e. both :class:`RoomThermalModel` and
+    :class:`PhysicsRoomThermalModel`), the simulator automatically provides
+    them.  Solar irradiance is derived from the simulation timestamp using the
+    built-in astronomical clear-sky model; occupancy comes from the per-room
+    predictors or the room config schedule.
+
+    Args:
+        room_configs:          Mapping of room_id → :class:`RoomConfig`.
+        thermal_models:        Mapping of room_id → thermal model instance.
+        occupancy_predictors:  Optional per-room occupancy predictors.
+        latitude_deg:          Site latitude for solar irradiance [°N].
+        cloud_cover:           Constant fractional cloud cover [0–1].
+    """
 
     def __init__(
         self,
         room_configs: Dict[str, RoomConfig],
         thermal_models: Dict[str, object],
         occupancy_predictors: Optional[Dict[str, OccupancyPredictor]] = None,
+        latitude_deg: float = 40.0,
+        cloud_cover: float = 0.0,
     ):
         self.room_configs = room_configs
         self.thermal_models = thermal_models
         self.occupancy_predictors = occupancy_predictors or {}
+        self.latitude_deg = latitude_deg
+        self.cloud_cover = cloud_cover
 
     def _resolve_action(self, action: object) -> HeatingAction:
         return HeatingAction.from_value(action)
@@ -54,14 +74,23 @@ class HouseSimulator:
         next_temperatures: Dict[str, float] = {}
         resolved_actions: Dict[str, HeatingAction] = {}
 
+        solar_w_m2 = solar_irradiance_wm2(
+            resolved_timestamp,
+            latitude_deg=self.latitude_deg,
+            cloud_cover=self.cloud_cover,
+        )
+
         for room_name, current_temp in state.room_temperatures.items():
             action = self._resolve_action(heating_actions.get(room_name, HeatingAction.OFF))
             resolved_actions[room_name] = action
+            occupancy_val = self._occupancy_for_timestamp(room_name, resolved_timestamp)
             next_temperatures[room_name] = self.thermal_models[room_name].step(
                 current_temp=current_temp,
                 outside_temp=state.outdoor_temp,
                 heating_power=action.power_level,
                 dt_minutes=dt_minutes,
+                solar_irradiance_w_m2=solar_w_m2,
+                occupancy=occupancy_val,
             )
 
         next_occupancy = {
