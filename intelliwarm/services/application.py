@@ -62,11 +62,13 @@ def create_runtime_bootstrap(
 
     resolved_database_path = _resolve_database_path(project_root, database_path or config.database_path)
     database = Database(str(resolved_database_path))
-    default_device_id = config.thermostat_id or config.smart_plug_id
+    default_device_id = config.smart_plug_id or config.thermostat_id
+    default_furnace_id = config.thermostat_id or config.smart_plug_id
     sensor_manager = SensorManager.with_hardware_fallback()
     device_controller = DeviceController.with_hardware_fallback(
         enable_hardware=config.enable_device_control,
         default_device_id=default_device_id,
+        default_furnace_id=default_furnace_id,
     )
     energy_service = EnergyPriceService(config.electricity_price, config.gas_price)
     forecast_service = ForecastBundleService(energy_service=energy_service)

@@ -14,7 +14,7 @@ from datetime import datetime
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.optimizer import MPCController, CostFunction
 from intelliwarm.prediction import OccupancyPredictor
-from intelliwarm.pricing import EnergyPriceService
+from intelliwarm.pricing import CallbackPriceProvider, EnergyPriceService, StaticPriceProvider
 from intelliwarm.sensors import HardwareSensorBackend, SensorManager
 from intelliwarm.control import BaselineController, DeviceController, HardwareDeviceBackend
 from intelliwarm.core import SystemConfig
@@ -304,6 +304,36 @@ class TestEnergyPricing:
         assert all("electricity" in p and "gas" in p for p in forecast)
         assert all(p["electricity"] > 0 for p in forecast)
 
+    def test_static_price_provider_returns_constant_forecast(self):
+        service = EnergyPriceService(0.12, 5.0, provider=StaticPriceProvider())
+
+        forecast = service.get_price_forecast(3, start_time=datetime(2026, 3, 11, 8, 0))
+
+        assert [point["electricity"] for point in forecast] == [0.12, 0.12, 0.12]
+        assert [point["gas"] for point in forecast] == [5.0, 5.0, 5.0]
+
+    def test_callback_price_provider_can_override_current_and_forecast_prices(self):
+        provider = CallbackPriceProvider(
+            current_reader=lambda: {"electricity": 0.22, "gas": 1.75},
+            forecast_reader=lambda hours, start_time: [
+                {
+                    "hour": (start_time.hour + offset) % 24,
+                    "electricity": 0.20 + offset,
+                    "gas": 1.50,
+                }
+                for offset in range(hours)
+            ],
+        )
+        service = EnergyPriceService(0.12, 5.0, provider=provider)
+
+        assert service.get_current_electricity_price() == 0.22
+        assert service.get_current_gas_price() == 1.75
+
+        forecast = service.get_price_forecast(2, start_time=datetime(2026, 3, 11, 8, 0))
+        assert forecast[0]["electricity"] == 0.20
+        assert forecast[1]["electricity"] == 1.20
+        assert forecast[0]["gas"] == 1.50
+
 
 class TestForecastBundleService:
     """Test aligned forecast bundle generation."""
@@ -462,6 +492,42 @@ class TestDeviceController:
 
         assert status["power_level"] == 0.4
         assert status["control_source"] == "simulated_fallback"
+
+    def test_zone_furnace_control(self):
+        controller = DeviceController()
+        controller.register_furnace("Residential")
+
+        controller.set_zone_furnace("Residential", 0.7)
+        status = controller.get_zone_furnace_status("Residential")
+
+        assert status["zone"] == "Residential"
+        assert status["is_on"] is True
+        assert status["power_level"] == 0.7
+
+        controller.turn_off_zone_furnace("Residential")
+        status = controller.get_zone_furnace_status("Residential")
+        assert status["power_level"] == 0.0
+        assert status["is_on"] is False
+
+    def test_hardware_furnace_backend_reports_hardware_status(self):
+        commands = []
+        controller = DeviceController.with_hardware_fallback(
+            enable_hardware=True,
+            default_furnace_id="furnace-1",
+            command_writer=lambda device_id, level: commands.append((device_id, level)),
+            status_reader=lambda device_id: {
+                "is_on": True,
+                "power_level": 0.8,
+            },
+        )
+        controller.register_furnace("Residential")
+
+        controller.set_zone_furnace("Residential", 0.8)
+        status = controller.get_zone_furnace_status("Residential")
+
+        assert commands == [("furnace-1", 0.8)]
+        assert status["control_source"] == "hardware"
+        assert status["device_id"] == "furnace-1"
 
 
 if __name__ == "__main__":

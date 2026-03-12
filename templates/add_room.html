@@ -100,6 +100,10 @@
           <input type="number" name="roomSize" id="roomSize" placeholder="e.g. 200" min="1" required>
         </div>
         <div class="field">
+          <label for="targetTemp">Target Temperature (°C)</label>
+          <input type="number" name="targetTemp" id="targetTemp" placeholder="e.g. 21" min="10" max="35" step="0.5">
+        </div>
+        <div class="field">
           <label for="zone">Zone</label>
           <select name="zone" id="zone">
             {% for zone in zones %}
@@ -107,12 +111,19 @@
             {% endfor %}
           </select>
         </div>
+        <div class="field">
+          <label for="heatSource">Preferred Heat Source</label>
+          <select name="heatSource" id="heatSource">
+            <option value="electric">Electric Heater</option>
+            <option value="gas_furnace">Gas Furnace</option>
+          </select>
+        </div>
         <button class="submit-btn" type="submit">+ Add Room</button>
       </form>
     </div>
   </div>
 
-  <footer>IntelliWarm &nbsp;·&nbsp; © 2025 Nico Bartello &amp; Uday Atragada</footer>
+  <footer>IntelliWarm &nbsp;·&nbsp; © 2026 Uday Atragada</footer>
 </body>
 
 </html>

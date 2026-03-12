@@ -1,7 +1,7 @@
 """
-Learning Module Exports
+Learning module exports.
 """
 
-from .trainer import ModelUpdater, Trainer
+from .gym_env import IntelliWarmRoomEnv
 
-__all__ = ["ModelUpdater", "Trainer"]
+__all__ = ["IntelliWarmRoomEnv"]

@@ -79,9 +79,10 @@ def test_create_app_registers_runtime_and_routes(tmp_path):
     assert len(payload) == 1
     assert payload[0]["room"] == "office"
     assert payload[0]["zone"] == "Work"
+    assert payload[0]["configured_heat_source"] == "electric"
 
 
-def test_optimization_endpoint_accepts_baseline_controller(tmp_path):
+def test_optimization_endpoint_routes_baseline_requests_through_hybrid_controller(tmp_path):
     config_path = tmp_path / "config.yaml"
     _write_app_config(config_path)
 
@@ -95,8 +96,39 @@ def test_optimization_endpoint_accepts_baseline_controller(tmp_path):
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["controller"] == "baseline"
+    assert payload["controller"] == "hybrid"
     assert payload["next_action_label"] in {"OFF", "ECO", "COMFORT", "PREHEAT"}
+    assert "hybrid_decision" in payload
+
+
+def test_add_room_form_supports_target_temperature_and_heat_source(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    _write_app_config(config_path)
+
+    app = create_app(
+        config_path=str(config_path),
+        database_path=str(tmp_path / "app.db"),
+    )
+
+    with app.test_client() as client:
+        response = client.post(
+            "/add_room",
+            data={
+                "roomName": "Guest Room",
+                "roomSize": "180",
+                "zone": "Work",
+                "targetTemp": "22",
+                "heatSource": "gas_furnace",
+            },
+            follow_redirects=True,
+        )
+        rooms_response = client.get("/api/rooms")
+
+    assert response.status_code == 200
+    payload = rooms_response.get_json()
+    guest_room = next(room for room in payload if room["room"] == "Guest Room")
+    assert guest_room["target_temp"] == 22.0
+    assert guest_room["configured_heat_source"] == "gas_furnace"
 
 
 def test_demo_timeline_route_stays_registered_after_modularization(tmp_path):

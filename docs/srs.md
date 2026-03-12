@@ -314,7 +314,7 @@ The simulator must support:
 
 ### Phase 2 — Baseline control and explainability
 
-Status: next active implementation slice.
+Status: implemented with runtime integration; future work should focus on actuator boundaries and learned-policy support.
 
 Purpose: create a reliable baseline before advanced optimization.
 
@@ -448,7 +448,7 @@ For each timestep over a finite horizon, minimize:
 
 ### Phase 5 — Persistence, analytics, and reporting
 
-Status: partial SQLite persistence exists; reporting and richer repositories remain future work.
+Status: SQLite persistence and reporting are implemented; richer historical analytics remain future work.
 
 Purpose: convert prototype logic into a durable application.
 
@@ -489,7 +489,7 @@ Purpose: convert prototype logic into a durable application.
 
 ### Phase 6 — Web app polish and user workflows
 
-Status: Flask templates exist, but route modularization and richer view-model separation remain future work.
+Status: route modularization and runtime-backed dashboard view models are implemented; richer comparative UX remains future work.
 
 Purpose: make the product usable and legible.
 
@@ -523,6 +523,8 @@ Purpose: make the product usable and legible.
 
 Purpose: make IntelliWarm ready for real data sources.
 
+Status: provider boundaries for pricing and device control are implemented with offline-safe fallbacks; concrete live vendor integrations remain future work.
+
 #### Deliverables
 
 * weather service adapter
@@ -533,9 +535,9 @@ Purpose: make IntelliWarm ready for real data sources.
 #### Copilot-ready tasks
 
 1. Create weather provider interface and a static implementation for tests.
-2. Create energy price provider interface and a static implementation for tests.
+2. Extend the implemented energy price provider boundary with concrete live vendor integrations.
 3. Add optional live provider stubs behind feature flags.
-4. Create device controller interface with `SimulatedDeviceController`.
+4. Extend the implemented device controller boundary with vendor-specific furnace/heater integrations.
 5. Add command audit logging for all outbound control decisions.
 6. Add safety mode that recommends actions without executing them.
 
@@ -551,6 +553,8 @@ Purpose: make IntelliWarm ready for real data sources.
 
 Purpose: prepare for future RL and adaptive control without breaking the core.
 
+Status: a deterministic Gym-compatible room environment is implemented; multi-room tasks and learned-policy evaluation remain future work.
+
 #### Deliverables
 
 * richer probabilistic occupancy models
@@ -559,8 +563,8 @@ Purpose: prepare for future RL and adaptive control without breaking the core.
 
 #### Copilot-ready tasks
 
-1. Wrap the simulator in a Gym-compatible environment.
-2. Define state, action, reward, and episode logic.
+1. Extend the implemented Gym-compatible environment from room-level to multi-room and zone-level training tasks.
+2. Refine state, action, reward, and episode logic for house-level control.
 3. Add reward terms for cost, comfort, and switching.
 4. Add evaluation scripts comparing RL policy to MPC.
 5. Keep RL isolated from production control pathways.

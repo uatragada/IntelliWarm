@@ -375,6 +375,7 @@ class SystemConfig:
             "display_temp_f": raw_room_config.get("display_temp_f", room_config.get("display_temp_f")),
             "humidity": float(raw_room_config.get("humidity", room_config.get("humidity", 45.0))),
             "heating_source": str(raw_room_config.get("heating_source", room_config.get("heating_source", "Off"))),
+            "heat_source": str(raw_room_config.get("heat_source", room_config.get("heat_source", "electric"))),
         }
         if overrides:
             resolved.update(dict(overrides))

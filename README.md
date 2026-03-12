@@ -1,35 +1,53 @@
 # IntelliWarm
 
-IntelliWarm is a Python and Flask project for intelligent HVAC optimization with a real-world deployment target. Simulation is a core capability for validation and safe iteration, but the platform is being built to control real HVAC hardware through explicit integration boundaries.
+IntelliWarm is an intelligent HVAC optimization platform built for real-world deployment. It minimizes energy costs in homes and offices by deciding in real time whether to run a **gas furnace** (zone-level) or **electric space heaters** (room-level) based on live energy prices — and controls real hardware through explicit integration boundaries.
+
+Simulation is a first-class capability for safe development and offline validation, but every controller, adapter, and cost model is designed to run with real hardware.
+
+## The Core Idea: Hybrid Heating Cost Minimization
+
+The key cost-saving mechanism is `HybridController` in `intelliwarm/control/hybrid_controller.py`. For each zone at each timestep it answers:
+
+> *Is it cheaper right now to run the gas furnace for the whole zone, or let each room run its own electric heater?*
+
+```
+electric_cost  = Σ (heater_kW × action.power_level × electricity_$/kWh)  per room needing heat
+furnace_cost   = (furnace_btu_per_hour / 100_000) / efficiency × gas_$/therm
+
+if zone.has_furnace and furnace_cost < electric_cost:
+	→ activate furnace at the highest demanded action level for the whole zone
+else:
+	→ each room runs its electric heater at its individual baseline action level
+```
+
+The furnace heats an entire zone uniformly and is economical when many rooms need heat simultaneously. Electric heaters allow per-room precision and are cheaper when only one or two rooms need heat. The controller automatically switches based on real prices.
 
 ## Current Focus
 
 The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can continue implementation with high alignment and low drift.
 
-Current completed foundations:
+**Completed foundations:**
 
-- runtime orchestration extracted to `intelliwarm/services/runtime.py`
-- Flask bootstrap and route wiring centralized in `intelliwarm/services/application.py`
-- typed YAML config loading with environment overrides in `intelliwarm/core/config.py`
-- typed simulation primitives in `intelliwarm/data/models.py`
-- explainable baseline controller in `intelliwarm/control/baseline_controller.py`
-- aligned forecast bundle service in `intelliwarm/services/forecast_bundle.py`
-- hardware-ready sensor and actuator backends with simulation fallback
-- modular Flask routes under `intelliwarm/routes/`
-- typed config validation and preserved structured schedule support in `intelliwarm/core/config.py`
-- SQLite-backed reporting services in `intelliwarm/services/reporting.py`
-- runtime safety overrides and recent-event observability in `intelliwarm/services/runtime.py`
-- deterministic multi-room simulation in `intelliwarm/models/simulator.py`
-- thermal step and simulate APIs in `intelliwarm/models/thermal_model.py`
-- timestamp-aware occupancy prediction in `intelliwarm/prediction/occupancy_model.py`
-- focused regression tests for runtime, simulation, config, and app bootstrap
+- **Hybrid heating cost engine** — `intelliwarm/control/hybrid_controller.py` ← primary cost saver
+- `HeatSourceType`, `ZoneConfig`, `HybridHeatingDecision` domain types in `intelliwarm/data/models.py`
+- Explainable baseline controller (`OFF`, `ECO`, `COMFORT`, `PREHEAT`) driving per-room needs
+- Aligned forecast bundle service — occupancy, weather, and pricing share one horizon contract
+- Runtime orchestration with safety overrides and recent-event observability
+- Hardware-ready sensor and actuator backends with simulation fallback
+- Typed YAML config loading with `INTELLIWARM_*` environment overrides
+- Modular Flask routes, SQLite-backed reporting, and deterministic multi-room simulation
+- Hybrid runtime integration in `IntelliWarmRuntime.optimize_heating_plan()`
+- Dashboard/runtime view models exposing active heat source, requested mode, applied mode, cost, and rationale
+- Zone furnace actuation through `DeviceController`, with room electric heaters forced off when gas heat is selected
+- Pricing provider boundary (`TimeOfUsePriceProvider`, `StaticPriceProvider`, `CallbackPriceProvider`) with offline-safe fallback forecasts
+- Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using the same `OFF`/`ECO`/`COMFORT`/`PREHEAT` action contract
+- 50+ regression tests across all modules
 
-Real-world direction now explicitly includes:
+**Immediate next work:**
 
-- hardware adapter interfaces for sensors and device actuation
-- deployment-safe runtime behavior with fallback simulation mode
-- observability and persistence for field diagnostics and reporting
-- incremental hardening for production usage (safety, reliability, and operability)
+- Connect the pricing provider boundary to a concrete live vendor/provider for accurate production prices
+- Expand operator-facing comparisons between hybrid, baseline, MPC, and future learned policies
+- Add multi-room and zone-aware training environments on top of the new Gym-compatible room environment
 
 ## Repository Map
 
@@ -58,14 +76,19 @@ IntelliWarm/
 
 ## Architecture Summary
 
-- `app.py`: Flask entrypoint
+- `app.py` / `intelliwarm/services/application.py`: Flask entrypoint and bootstrap
 - `intelliwarm/services/application.py`: Flask app/bootstrap wiring and route registration
-- `intelliwarm/services/runtime.py`: application orchestration and demo/runtime state
+- `intelliwarm/services/runtime.py`: application orchestration, zone-aware hybrid decisions, and dashboard/runtime state
 - `intelliwarm/core/config.py`: typed config loading for YAML plus `INTELLIWARM_*` environment overrides
+- `intelliwarm/control/hybrid_controller.py`: **zone-level hybrid heating cost engine** — the primary actuator decision point
+- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based baseline (`OFF`/`ECO`/`COMFORT`/`PREHEAT`)
 - `intelliwarm/models/thermal_model.py`: room thermal dynamics
 - `intelliwarm/models/simulator.py`: deterministic multi-room simulation
 - `intelliwarm/prediction/occupancy_model.py`: schedule and timestamp-based occupancy prediction
 - `intelliwarm/optimizer/mpc_controller.py`: current MPC implementation
+- `intelliwarm/control/device_controller.py`: HVAC actuator backend (hardware-ready with simulation fallback)
+- `intelliwarm/sensors/sensor_manager.py`: sensor backend (hardware-ready with simulation fallback)
+- `intelliwarm/learning/gym_env.py`: Gym-compatible deterministic training environment for future ML control work
 - `intelliwarm/storage/database.py`: SQLite persistence layer
 
 See `docs/architecture.md` for the working architecture and `docs/roadmap.md` for current sequencing.
@@ -89,7 +112,17 @@ IntelliWarm should support two operating modes:
 - Simulation mode for deterministic testing, policy comparison, and offline development
 - Live mode for real hardware integration through controlled adapters, safety checks, and runtime guardrails
 
-All new control features should be designed to run in both modes using shared action and forecast contracts.
+All new control features must run in both modes using the shared `HybridHeatingDecision`, `ControlDecision`, and `ForecastBundle` contracts. The hybrid cost calculation must use real-time energy prices in live mode.
+
+### Real-World Hardware Expectations
+
+| Component | Live Mode Target | Simulation Fallback |
+|-----------|-----------------|---------------------|
+| Gas furnace | Zone relay/thermostat signal via `DeviceController` | `SimulatedFurnace` zone actuator |
+| Electric heaters | Per-room relay or smart plug via `DeviceController` | `SimulatedHeater` per room |
+| Temperature sensors | GPIO/MQTT/REST via `SensorManager` hardware backend | Thermal model state |
+| Energy prices | Live gas and electricity provider APIs | `configs/config.yaml` static values |
+| Occupancy | PIR sensors or presence detection | Schedule-based prediction |
 
 ## Copilot Autopilot
 
@@ -111,14 +144,14 @@ The repo now includes explicit instructions and prompts for that flow.
 
 ## Current Priority Queue
 
-The current delivery-order implementation slices are complete. Next work should deepen live integrations and operator-facing features on the existing service and adapter boundaries.
+The current delivery-order implementation slices are complete, including hybrid runtime integration. Next work should deepen live integrations, operator-facing comparisons, and future ML training support on the existing service and adapter boundaries.
 
 ## Testing
 
 Focused verification for shared model and runtime work:
 
 ```bash
-pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules.py tests/test_config_loading.py tests/test_app_bootstrap.py
+pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules.py
 ```
 
 Full suite:
@@ -133,7 +166,6 @@ pytest tests/
 - `CONTRIBUTING.md`: development workflow
 - `docs/architecture.md`: current working architecture
 - `docs/roadmap.md`: milestone sequence and active next work
-- `docs/copilot-prompts.md`: reusable prompts for bounded Copilot tasks
 - `docs/srs.md`: repo-grounded product and system requirements
 
 ## Technology Stack
@@ -148,13 +180,13 @@ pytest tests/
 
 ## Contributing
 
-Contributions are welcome, especially in the current bounded work areas:
+Contributions are welcome. The current highest-impact work areas:
 
-1. Baseline controller with explainable discrete actions.
-2. Forecast bundle service for aligned occupancy, outdoor temperature, and pricing horizons.
-3. Flask route modularization into thin service-backed modules.
-4. Typed config validation layered on `configs/config.yaml`.
-5. Persistence and reporting improvements on top of the current SQLite workflow.
+1. **Live energy price integration** — replace the current static price stub with a real gas and electricity provider API so cost decisions are accurate.
+2. **Historical and scenario dashboards** — extend the current dashboard from live status cards into richer comparisons and operator reports.
+3. **Multi-room RL environments** — extend the current room-level Gym-compatible environment into zone-aware and house-level training tasks.
+4. **Hybrid/MPC contract convergence** — align controller outputs so learned or optimized policies can slot into the same runtime surfaces.
+5. **Hardware command enrichment** — evolve furnace and room-heater adapters from shared stubs into vendor-specific integrations with explicit telemetry.
 
 Before making non-trivial changes, read:
 

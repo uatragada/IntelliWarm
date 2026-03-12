@@ -35,6 +35,15 @@ class RuntimeTestConfig:
             "bedroom": {
                 "zone": "Residential",
                 "target_temp": 21,
+                "heat_source": "electric",
+            }
+        }
+        self.zones = {
+            "Residential": {
+                "description": "Residential zone",
+                "has_furnace": True,
+                "furnace_btu_per_hour": 60000.0,
+                "furnace_efficiency": 0.80,
             }
         }
 
@@ -118,7 +127,7 @@ def test_optimize_heating_plan_updates_device_and_database(tmp_path):
     assert recorded_rows == 1
 
 
-def test_optimize_heating_plan_supports_baseline_controller(tmp_path):
+def test_optimize_heating_plan_routes_zone_decisions_through_hybrid_controller(tmp_path):
     runtime = create_runtime(tmp_path)
     runtime.add_room(
         name="bedroom",
@@ -141,16 +150,169 @@ def test_optimize_heating_plan_supports_baseline_controller(tmp_path):
         "bedroom",
         occupancy_override=[1.0] * runtime.config.optimization_horizon,
         current_action_override=0.0,
-        controller_type="baseline",
+        controller_type="hybrid",
     )
 
     assert plan is not None
-    assert plan["controller"] == "baseline"
-    assert plan["next_action_label"] == "PREHEAT"
-    assert "explanation" in plan
+    assert plan["controller"] == "hybrid"
+    assert plan["hybrid_decision"]["zone"] == "Residential"
+    assert plan["hybrid_action_label"] == "PREHEAT"
+    assert "hybrid_decision" in plan
 
     device_status = runtime.device_controller.get_device_status("bedroom")
     assert device_status["power_level"] == plan["next_action"]
+
+
+def test_optimize_heating_plan_suppresses_room_electric_when_furnace_selected(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "heat_source": "electric",
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=15.0,
+        initial_occupancy=True,
+    )
+    runtime.add_room(
+        name="office",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "heat_source": "electric",
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=15.0,
+        initial_occupancy=True,
+    )
+
+    runtime.update_utility_rates(electricity_price=0.40, gas_price=1.20)
+    plan = runtime.optimize_heating_plan(
+        "bedroom",
+        occupancy_override=[1.0] * runtime.config.optimization_horizon,
+        controller_type="hybrid",
+    )
+
+    assert plan is not None
+    assert plan["furnace_on"] is True
+    assert plan["heat_source"] == "gas_furnace"
+    assert plan["hybrid_action_label"] in {"COMFORT", "PREHEAT"}
+    assert plan["next_action_label"] == "OFF"
+    assert plan["metadata"]["electric_command_suppressed"] is True
+
+    device_status = runtime.device_controller.get_device_status("bedroom")
+    assert device_status["power_level"] == plan["next_action"]
+    furnace_status = runtime.device_controller.get_zone_furnace_status("Residential")
+    assert furnace_status["is_on"] is True
+    assert furnace_status["power_level"] == plan["hybrid_action"]
+
+
+def test_optimize_heating_plan_turns_furnace_off_for_electric_hybrid_choice(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "heat_source": "electric",
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=19.0,
+        initial_occupancy=True,
+    )
+
+    plan = runtime.optimize_heating_plan(
+        "bedroom",
+        occupancy_override=[1.0] * runtime.config.optimization_horizon,
+        controller_type="hybrid",
+    )
+
+    assert plan is not None
+    assert plan["furnace_on"] is False
+    furnace_status = runtime.device_controller.get_zone_furnace_status("Residential")
+    assert furnace_status["is_on"] is False
+    assert furnace_status["power_level"] == 0.0
+
+
+def test_get_rooms_api_data_exposes_hybrid_modes_and_sources(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "heat_source": "electric",
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=18.5,
+        initial_occupancy=True,
+    )
+
+    runtime.optimize_heating_plan(
+        "bedroom",
+        occupancy_override=[1.0] * runtime.config.optimization_horizon,
+        controller_type="hybrid",
+    )
+
+    rooms = runtime.get_rooms_api_data()
+
+    assert len(rooms) == 1
+    room = rooms[0]
+    assert room["configured_heat_source"] == "electric"
+    assert room["active_heat_source"] in {"electric", "gas_furnace"}
+    assert room["recommended_mode"] in {"OFF", "ECO", "COMFORT", "PREHEAT"}
+    assert room["latest_plan"]["controller"] == "hybrid"
+
+
+def test_get_zone_status_data_includes_furnace_status(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "heat_source": "electric",
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=15.0,
+        initial_occupancy=True,
+    )
+    runtime.add_room(
+        name="office",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "heat_source": "electric",
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=15.0,
+        initial_occupancy=True,
+    )
+    runtime.update_utility_rates(electricity_price=0.40, gas_price=1.20)
+
+    runtime.optimize_heating_plan(
+        "bedroom",
+        occupancy_override=[1.0] * runtime.config.optimization_horizon,
+        controller_type="hybrid",
+    )
+
+    zones = runtime.get_zone_status_data()
+    residential = next(zone for zone in zones if zone["name"] == "Residential")
+    assert residential["furnace_status"]["is_on"] is True
 
 
 def test_build_forecast_bundle_aligns_room_forecasts(tmp_path):
@@ -230,7 +392,7 @@ def test_room_report_includes_controller_metadata(tmp_path):
 
     assert report is not None
     assert report["summary"]["optimization_runs"] == 1
-    assert report["summary"]["last_controller_type"] == "baseline"
+    assert report["summary"]["last_controller_type"] == "hybrid"
     assert report["recent_optimizations"][0]["action_label"] == "PREHEAT"
 
 

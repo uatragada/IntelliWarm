@@ -142,7 +142,10 @@
         {% for z in zones %}
         <li class="zone-item">
           <span class="zone-name">{{ z.name }}</span>
-          <span class="zone-desc">{{ z.description or 'No description' }}</span>
+          <span class="zone-desc">
+            {{ z.description or 'No description' }} ·
+            Sources: {{ z.available_heat_sources|join(', ') }}
+          </span>
         </li>
         {% endfor %}
       </ul>
@@ -153,7 +156,7 @@
 
   </div>
 
-  <footer>IntelliWarm &nbsp;·&nbsp; © 2025 Nico Bartello &amp; Uday Atragada</footer>
+  <footer>IntelliWarm &nbsp;·&nbsp; © 2026 Uday Atragada</footer>
 </body>
 
 </html>

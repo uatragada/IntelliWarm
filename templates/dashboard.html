@@ -6,8 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IntelliWarm — Dashboard</title>
   <script>
-    // Auto-refresh every 60 seconds
-    setTimeout(function() { window.location.reload(); }, 60000);
+    setTimeout(function () { window.location.reload(); }, 60000);
   </script>
   <style>
     :root {
@@ -18,8 +17,14 @@
       --border: #e2e8f0;
       --accent: #e76f51;
       --muted: #64748b;
-      --z0: #3b82f6; --z1: #f59e0b; --z2: #10b981; --z3: #8b5cf6;
+      --success-bg: #d1fae5;
+      --success-ink: #065f46;
+      --warn-bg: #fef3c7;
+      --warn-ink: #92400e;
+      --info-bg: #dbeafe;
+      --info-ink: #1d4ed8;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--paper); min-height: 100vh; }
 
@@ -30,98 +35,160 @@
       border-bottom: 3px solid var(--accent);
     }
     .header-inner {
-      max-width: 1300px; margin: 0 auto;
-      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+      max-width: 1300px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
     }
     .brand { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.4px; }
     .brand em { font-style: normal; color: #f4a261; }
-    .header-sub { font-size: 0.82rem; opacity: 0.6; }
+    .header-sub { font-size: 0.84rem; opacity: 0.8; }
 
     nav { background: var(--card); border-bottom: 1px solid var(--border); }
     .nav-inner { max-width: 1300px; margin: 0 auto; display: flex; padding: 0 24px; }
     nav a {
-      text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem;
-      padding: 12px 14px; border-bottom: 3px solid transparent;
-      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+      text-decoration: none;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.88rem;
+      padding: 12px 14px;
+      border-bottom: 3px solid transparent;
+      white-space: nowrap;
     }
     nav a:hover { color: var(--ink); }
     nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
 
     .container { max-width: 1300px; margin: 0 auto; padding: 24px 20px 48px; }
-
     .page-title {
-      font-size: 1.1rem; font-weight: 800; color: var(--ink-soft);
-      margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: var(--ink-soft);
     }
     .refresh-badge {
-      font-size: 0.72rem; font-weight: 600; background: #f1f5f9;
-      color: var(--muted); border: 1px solid var(--border);
-      border-radius: 20px; padding: 2px 10px;
-    }
-
-    .dashboard {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 14px;
-    }
-
-    .room-card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-left: 4px solid var(--accent);
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: 0 2px 8px rgba(13,27,42,0.05);
-      transition: box-shadow 0.15s;
-    }
-    .room-card:hover { box-shadow: 0 4px 16px rgba(13,27,42,0.1); }
-
-    .room-title {
-      font-size: 0.95rem;
-      font-weight: 800;
-      color: var(--ink);
-      margin-bottom: 10px;
-    }
-    .room-zone {
-      display: inline-block;
       font-size: 0.72rem;
       font-weight: 700;
       background: #f1f5f9;
+      border: 1px solid var(--border);
       color: var(--muted);
       border-radius: 20px;
-      padding: 1px 8px;
-      margin-left: 6px;
+      padding: 2px 10px;
     }
 
-    .metric { margin: 6px 0; font-size: 0.88rem; color: var(--muted); }
-    .metric strong { color: var(--ink); font-weight: 700; }
+    .summary-grid,
+    .zone-grid,
+    .room-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .summary-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 20px; }
+    .zone-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); margin-bottom: 22px; }
+    .room-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+
+    .card,
+    .summary-card,
+    .zone-card,
+    .room-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 2px 10px rgba(13, 27, 42, 0.05);
+    }
+    .summary-card { padding: 16px; }
+    .summary-label {
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .summary-value { font-size: 1.5rem; font-weight: 800; color: var(--ink); }
+    .summary-note { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+
+    .section-title {
+      font-size: 0.95rem;
+      font-weight: 800;
+      color: var(--ink-soft);
+      margin-bottom: 10px;
+    }
+
+    .zone-card,
+    .room-card { padding: 16px; }
+    .zone-header,
+    .room-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .zone-name,
+    .room-name { font-size: 1rem; font-weight: 800; color: var(--ink); }
+    .zone-desc,
+    .room-zone { font-size: 0.78rem; color: var(--muted); }
 
     .pill {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 2px 8px; border-radius: 20px;
-      font-size: 0.74rem; font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 700;
     }
-    .pill-occupied { background: #d1fae5; color: #065f46; }
-    .pill-vacant   { background: #f1f5f9; color: #64748b; }
+    .pill-success { background: var(--success-bg); color: var(--success-ink); }
+    .pill-warn { background: var(--warn-bg); color: var(--warn-ink); }
+    .pill-info { background: var(--info-bg); color: var(--info-ink); }
+    .pill-muted { background: #f1f5f9; color: var(--muted); }
 
-    .status-on { color: #059669; font-weight: 700; }
-    .status-off { color: #94a3b8; font-weight: 700; }
+    .metric-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+    .metric strong { color: var(--ink); font-weight: 700; text-align: right; }
+
+    .rationale {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #f8fafc;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.4;
+    }
 
     .empty-state {
-      text-align: center; padding: 60px 20px;
-      color: var(--muted); font-size: 0.95rem;
+      text-align: center;
+      padding: 48px 20px;
+      color: var(--muted);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
     }
     .empty-state a { color: var(--accent); text-decoration: none; font-weight: 700; }
 
     footer {
-      text-align: center; color: var(--muted); font-size: 0.82rem;
-      padding: 20px; border-top: 1px solid var(--border); margin-top: 12px;
-    }
-
-    .footer {
       text-align: center;
+      color: var(--muted);
+      font-size: 0.82rem;
       padding: 20px;
-      color: #777;
+      border-top: 1px solid var(--border);
+      margin-top: 18px;
     }
   </style>
 </head>
@@ -130,7 +197,7 @@
   <header>
     <div class="header-inner">
       <div class="brand">Intelli<em>Warm</em></div>
-      <div class="header-sub">Live room status &amp; occupancy</div>
+      <div class="header-sub">Hybrid HVAC dashboard — zone furnace vs. room electric optimization</div>
     </div>
   </header>
 
@@ -145,27 +212,94 @@
 
   <div class="container">
     <div class="page-title">
-      All Rooms
+      Operational Overview
       <span class="refresh-badge">↻ auto-refresh 60s</span>
     </div>
 
+    <div class="summary-grid">
+      <div class="summary-card">
+        <div class="summary-label">Runtime mode</div>
+        <div class="summary-value">{{ runtime.mode|title }}</div>
+        <div class="summary-note">{{ "Hardware-enabled control path" if runtime.hardware_control_enabled else "Simulation-safe fallback active" }}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Rooms</div>
+        <div class="summary-value">{{ runtime.room_count }}</div>
+        <div class="summary-note">{{ runtime.optimized_room_count }} with a recent optimization plan</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Zones</div>
+        <div class="summary-value">{{ runtime.zone_count }}</div>
+        <div class="summary-note">{{ runtime.last_cycle_summary.successful_rooms }} successful in last cycle</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Safety overrides</div>
+        <div class="summary-value">{{ runtime.last_cycle_summary.safety_overrides }}</div>
+        <div class="summary-note">{{ runtime.last_cycle_summary.failed_rooms }} failed optimizations last cycle</div>
+      </div>
+    </div>
+
     {% if rooms %}
-    <div class="dashboard">
-      {% for room in rooms %}
-      <div class="room-card">
-        <div class="room-title">
-          {{ room.name }}
-          <span class="room-zone">{{ room.zone }}</span>
-        </div>
-        <div class="metric">Temperature: <strong>{{ room.temperature }}°F</strong></div>
-        <div class="metric">Humidity: <strong>{{ room.humidity }}%</strong></div>
-        <div class="metric">
-          Occupancy:
-          <span class="pill {{ 'pill-occupied' if room.occupancy else 'pill-vacant' }}">
-            {{ '● Occupied' if room.occupancy else '○ Vacant' }}
+    <div class="section-title">Zone Decisions</div>
+    <div class="zone-grid">
+      {% for zone in zones %}
+      <div class="zone-card">
+        <div class="zone-header">
+          <div>
+            <div class="zone-name">{{ zone.name }}</div>
+            <div class="zone-desc">{{ zone.description or "No description configured" }}</div>
+          </div>
+          <span class="pill {{ 'pill-warn' if zone.furnace_on else 'pill-info' if zone.hybrid_decision else 'pill-muted' }}">
+            {{ zone.active_heat_source_label }}
           </span>
         </div>
-        <div class="metric">Heating: <strong class="{{ 'status-on' if room.heating_source != 'Off' else 'status-off' }}">{{ room.heating_source }}</strong></div>
+
+        <div class="metric-list">
+          <div class="metric"><span>Available heat sources</span><strong>{{ zone.available_heat_sources|join(", ") }}</strong></div>
+          <div class="metric"><span>Recommended mode</span><strong>{{ zone.recommended_mode or "No plan yet" }}</strong></div>
+          <div class="metric"><span>Applied room command</span><strong>{{ zone.applied_mode or "No plan yet" }}</strong></div>
+          <div class="metric"><span>Rooms needing heat</span><strong>{{ zone.rooms_needing_heat|join(", ") if zone.rooms_needing_heat else "None" }}</strong></div>
+          <div class="metric"><span>Hourly cost</span><strong>{{ "$%.3f"|format(zone.hourly_cost) if zone.hourly_cost is not none else "Pending" }}</strong></div>
+        </div>
+
+        {% if zone.rationale %}
+        <div class="rationale">{{ zone.rationale }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="section-title">Room Status</div>
+    <div class="room-grid">
+      {% for room in rooms %}
+      <div class="room-card">
+        <div class="room-header">
+          <div>
+            <div class="room-name">{{ room.name }}</div>
+            <div class="room-zone">{{ room.zone }}</div>
+          </div>
+          <span class="pill {{ 'pill-success' if room.occupancy else 'pill-muted' }}">
+            {{ "Occupied" if room.occupancy else "Vacant" }}
+          </span>
+        </div>
+
+        <div class="metric-list">
+          <div class="metric"><span>Temperature</span><strong>{{ room.temperature }}°C</strong></div>
+          <div class="metric"><span>Target</span><strong>{{ room.target_temp }}°C</strong></div>
+          <div class="metric"><span>Configured source</span><strong>{{ room.configured_heat_source_label }}</strong></div>
+          <div class="metric"><span>Active source</span><strong>{{ room.active_heat_source_label }}</strong></div>
+          <div class="metric"><span>Available sources</span><strong>{{ room.available_heat_source_labels|join(", ") }}</strong></div>
+          <div class="metric"><span>Recommended mode</span><strong>{{ room.recommended_mode or "No plan yet" }}</strong></div>
+          <div class="metric"><span>Applied mode</span><strong>{{ room.applied_mode or "No plan yet" }}</strong></div>
+          <div class="metric"><span>Controller</span><strong>{{ room.controller or "Not run yet" }}</strong></div>
+          <div class="metric"><span>Sensor source</span><strong>{{ room.sensor_source }}</strong></div>
+          <div class="metric"><span>Control source</span><strong>{{ room.control_source }}</strong></div>
+          <div class="metric"><span>Hourly cost</span><strong>{{ "$%.3f"|format(room.total_cost) if room.total_cost is not none else "Pending" }}</strong></div>
+        </div>
+
+        {% if room.explanation %}
+        <div class="rationale">{{ room.explanation }}</div>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -177,7 +311,7 @@
     {% endif %}
   </div>
 
-  <footer>IntelliWarm &nbsp;·&nbsp; © 2025 Nico Bartello &amp; Uday Atragada</footer>
+  <footer>IntelliWarm &nbsp;·&nbsp; © 2026 Uday Atragada</footer>
 </body>
 
 </html>

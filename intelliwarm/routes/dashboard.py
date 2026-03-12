@@ -14,7 +14,14 @@ def register_dashboard_routes(app: Flask):
 
     @app.route("/")
     def dashboard():
-        return render_template("dashboard.html", rooms=current_bootstrap().runtime.rooms)
+        dashboard_data = current_bootstrap().runtime.get_dashboard_data()
+        return render_template(
+            "dashboard.html",
+            dashboard=dashboard_data,
+            rooms=dashboard_data["rooms"],
+            zones=dashboard_data["zones"],
+            runtime=dashboard_data["runtime"],
+        )
 
     @app.route("/api/rooms", methods=["GET"])
     def api_get_rooms():
@@ -22,8 +29,8 @@ def register_dashboard_routes(app: Flask):
 
     @app.route("/api/optimization/<room_name>", methods=["GET"])
     def api_get_optimization(room_name: str):
-        controller_type = request.args.get("controller", default="mpc", type=str)
-        if controller_type not in {"mpc", "baseline"}:
+        controller_type = request.args.get("controller", default="hybrid", type=str)
+        if controller_type not in {"mpc", "baseline", "hybrid"}:
             return jsonify({"error": "Unsupported controller type"}), 400
 
         plan = current_bootstrap().runtime.optimize_heating_plan(
@@ -39,7 +46,7 @@ def register_dashboard_routes(app: Flask):
             if add_room_from_form(bootstrap.runtime, request.form):
                 return redirect(url_for("add_room"))
 
-        return render_template("add_room.html", zones=[zone["name"] for zone in bootstrap.runtime.zones])
+        return render_template("add_room.html", zones=bootstrap.runtime.get_zone_status_data())
 
     @app.route("/config_home", methods=["GET", "POST"])
     def config_home():
@@ -50,6 +57,6 @@ def register_dashboard_routes(app: Flask):
 
         return render_template(
             "config_home.html",
-            zones=bootstrap.runtime.zones,
+            zones=bootstrap.runtime.get_zone_status_data(),
             rates=bootstrap.runtime.utility_rates,
         )

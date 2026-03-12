@@ -20,6 +20,13 @@ def _default_display_temp_f(temp_c: float) -> float:
     return round((temp_c * 9 / 5) + 32, 1)
 
 
+def _heating_source_label(heat_source: str) -> str:
+    return {
+        "electric": "Electric Heater",
+        "gas_furnace": "Gas Furnace",
+    }.get(heat_source, heat_source.replace("_", " ").title())
+
+
 def add_room_from_form(runtime: IntelliWarmRuntime, form: Mapping[str, str]) -> bool:
     """Parse add-room form data and create the room through runtime services."""
     name = (form.get("roomName") or "").strip()
@@ -28,7 +35,15 @@ def add_room_from_form(runtime: IntelliWarmRuntime, form: Mapping[str, str]) -> 
 
     zone = (form.get("zone") or "Unassigned").strip()
     room_size_raw = (form.get("roomSize") or "").strip()
-    room_config = runtime.config.build_room_config(zone=zone)
+    target_temp_raw = (form.get("targetTemp") or "").strip()
+    heat_source = (form.get("heatSource") or "electric").strip() or "electric"
+    overrides = {
+        "heat_source": heat_source,
+        "heating_source": _heating_source_label(heat_source),
+    }
+    if target_temp_raw:
+        overrides["target_temp"] = float(target_temp_raw)
+    room_config = runtime.config.build_room_config(zone=zone, overrides=overrides)
     room_size = float(room_size_raw) if room_size_raw else float(room_config.get("room_size", 150.0))
     initial_sensor_temp = float(room_config.get("target_temp", runtime.config.default_target_temp))
 
@@ -41,7 +56,7 @@ def add_room_from_form(runtime: IntelliWarmRuntime, form: Mapping[str, str]) -> 
         initial_occupancy=bool(room_config.get("initial_occupancy", False)),
         display_temp_f=room_config.get("display_temp_f") or _default_display_temp_f(initial_sensor_temp),
         humidity=float(room_config.get("humidity", 45.0)),
-        heating_source=str(room_config.get("heating_source", "Off")),
+        heating_source=str(room_config.get("heating_source", _heating_source_label(heat_source))),
     )
     return True
 
