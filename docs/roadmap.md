@@ -106,6 +106,14 @@
 - the environment keeps ML experimentation offline-safe by using the same simulator and pricing contracts as the rest of the platform
 - regression coverage verifies deterministic rollouts and action-label mapping
 
+### Multi-Room Training Environment And Scenario Library
+
+- `IntelliWarmMultiRoomEnv` adds a padded `MultiDiscrete` action space spanning zone heat-source choices plus per-room heating modes
+- the environment reuses the deterministic `HouseSimulator` and applies gas-furnace vs. electric semantics at zone scope
+- `SyntheticScenarioGenerator` builds deterministic multi-room, multi-zone scenarios with varied schedules, weather, and price profiles
+- scenario resets can cycle through different training situations without introducing randomness
+- regression coverage verifies scenario generation, zone furnace propagation, and deterministic multi-room rollouts
+
 ---
 
 ## Active Next Priority Order
@@ -128,11 +136,11 @@ The dashboard now exposes the live hybrid heating choice to operators. The next 
 - Visualize comfort drift, savings, and control source trends over time
 - Keep using runtime/dashboard view models rather than reading controller internals directly in templates
 
-### 3. Multi-Room Gym Training Environment
+### 3. RL Evaluation And Policy Comparison
 
-Future ML control work should reuse the deterministic simulator rather than bypassing it.
+Future ML control work should now build on the implemented room and multi-room training environments.
 
-- Extend the current room-level Gym-compatible environment into zone-aware and whole-home tasks
+- Add evaluation scripts that compare learned policies against hybrid and MPC baselines on the deterministic scenario library
 - Reuse `OFF`, `ECO`, `COMFORT`, and `PREHEAT` actions so trained policies stay compatible with the live runtime
 - Support both pure simulation training and offline evaluation against recorded scenarios
 - Keep learned-policy execution behind the same runtime and safety boundaries as other controllers

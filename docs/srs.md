@@ -553,7 +553,7 @@ Status: provider boundaries for pricing and device control are implemented with 
 
 Purpose: prepare for future RL and adaptive control without breaking the core.
 
-Status: a deterministic Gym-compatible room environment is implemented; multi-room tasks and learned-policy evaluation remain future work.
+Status: deterministic Gym-compatible room and multi-room environments are implemented; learned-policy evaluation and richer house-level training objectives remain future work.
 
 #### Deliverables
 
@@ -563,10 +563,10 @@ Status: a deterministic Gym-compatible room environment is implemented; multi-ro
 
 #### Copilot-ready tasks
 
-1. Extend the implemented Gym-compatible environment from room-level to multi-room and zone-level training tasks.
-2. Refine state, action, reward, and episode logic for house-level control.
-3. Add reward terms for cost, comfort, and switching.
-4. Add evaluation scripts comparing RL policy to MPC.
+1. Refine state, action, reward, and episode logic for house-level control.
+2. Add reward terms for cost, comfort, and switching.
+3. Add evaluation scripts comparing RL policy to MPC.
+4. Expand the deterministic scenario library for broader seasonal and occupancy coverage.
 5. Keep RL isolated from production control pathways.
 
 #### Definition of done

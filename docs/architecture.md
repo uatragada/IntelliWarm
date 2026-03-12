@@ -45,6 +45,7 @@ Electric heaters = room-level actuators. Independent per-room control. Cheaper w
 - `intelliwarm/models/simulator.py`: deterministic `HouseSimulator`
 - `intelliwarm/prediction/occupancy_model.py`: schedule and timestamp-based occupancy prediction
 - `intelliwarm/learning/gym_env.py`: Gym-compatible deterministic room environment for future ML policy training
+- `intelliwarm/learning/scenario_generator.py`: deterministic multi-room, multi-zone scenario library for training and evaluation
 
 ### Control Layer
 
@@ -108,6 +109,6 @@ These actuation semantics must be honored in both simulation and live hardware m
 
 1. Dashboard should continue expanding from runtime cards into deeper operator tooling for cost, comfort, and controller comparisons.
 2. Live energy price provider must supply both gas and electricity prices for accurate decisions in production.
-3. Extend the current Gym-compatible room environment into multi-room and zone-aware training tasks.
+3. Add learned-policy evaluation and comparison tooling on top of the room and multi-room training environments.
 4. Converge MPC, hybrid, and future learned policies on the same runtime action/reporting contracts.
 5. Enrich hardware adapters with vendor-specific telemetry while preserving the current offline-safe fallback behavior.

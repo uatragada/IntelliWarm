@@ -41,13 +41,14 @@ The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can
 - Zone furnace actuation through `DeviceController`, with room electric heaters forced off when gas heat is selected
 - Pricing provider boundary (`TimeOfUsePriceProvider`, `StaticPriceProvider`, `CallbackPriceProvider`) with offline-safe fallback forecasts
 - Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using the same `OFF`/`ECO`/`COMFORT`/`PREHEAT` action contract
+- Multi-room, multi-zone Gym-compatible training environment plus deterministic synthetic scenario generation for varied schedules and conditions
 - 50+ regression tests across all modules
 
 **Immediate next work:**
 
 - Connect the pricing provider boundary to a concrete live vendor/provider for accurate production prices
 - Expand operator-facing comparisons between hybrid, baseline, MPC, and future learned policies
-- Add multi-room and zone-aware training environments on top of the new Gym-compatible room environment
+- Add evaluation scripts and baselines for learned policies against hybrid and MPC controllers
 
 ## Repository Map
 
@@ -89,6 +90,7 @@ IntelliWarm/
 - `intelliwarm/control/device_controller.py`: HVAC actuator backend (hardware-ready with simulation fallback)
 - `intelliwarm/sensors/sensor_manager.py`: sensor backend (hardware-ready with simulation fallback)
 - `intelliwarm/learning/gym_env.py`: Gym-compatible deterministic training environment for future ML control work
+- `intelliwarm/learning/scenario_generator.py`: deterministic multi-room, multi-zone scenario library for training and evaluation
 - `intelliwarm/storage/database.py`: SQLite persistence layer
 
 See `docs/architecture.md` for the working architecture and `docs/roadmap.md` for current sequencing.
@@ -184,8 +186,8 @@ Contributions are welcome. The current highest-impact work areas:
 
 1. **Live energy price integration** — replace the current static price stub with a real gas and electricity provider API so cost decisions are accurate.
 2. **Historical and scenario dashboards** — extend the current dashboard from live status cards into richer comparisons and operator reports.
-3. **Multi-room RL environments** — extend the current room-level Gym-compatible environment into zone-aware and house-level training tasks.
-4. **Hybrid/MPC contract convergence** — align controller outputs so learned or optimized policies can slot into the same runtime surfaces.
+3. **RL evaluation tooling** — compare learned policies against hybrid and MPC baselines across the deterministic scenario library.
+4. **Hybrid/MPC/learned contract convergence** — align controller outputs so learned or optimized policies can slot into the same runtime surfaces.
 5. **Hardware command enrichment** — evolve furnace and room-heater adapters from shared stubs into vendor-specific integrations with explicit telemetry.
 
 Before making non-trivial changes, read:
