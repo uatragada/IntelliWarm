@@ -16,6 +16,7 @@ from intelliwarm.optimizer import CostFunction, MPCController
 from intelliwarm.prediction import OccupancyPredictor
 
 from .forecast_bundle import ForecastBundleService
+from .reporting import ReportService
 
 
 class IntelliWarmRuntime:
@@ -37,6 +38,7 @@ class IntelliWarmRuntime:
         self.device_controller = device_controller
         self.energy_service = energy_service
         self.forecast_service = forecast_service or ForecastBundleService(energy_service=energy_service)
+        self.report_service = ReportService(database)
         self.logger = logger or logging.getLogger("IntelliWarm.Runtime")
 
         self.thermal_models: Dict[str, RoomThermalModel] = {}
@@ -393,8 +395,16 @@ class IntelliWarmRuntime:
                 )
 
             if plan and "next_action" in plan:
+                plan.setdefault("controller", controller_type)
+                plan.setdefault("next_action_label", HeatingAction.from_value(plan["next_action"]).name)
                 self.device_controller.set_heater(room_name, plan["next_action"])
-                self.database.record_optimization(room_name, plan["next_action"], plan["total_cost"])
+                self.database.record_optimization(
+                    room_name,
+                    plan["next_action"],
+                    plan["total_cost"],
+                    controller_type=plan["controller"],
+                    action_label=plan["next_action_label"],
+                )
                 plan["forecast_bundle"] = forecast_bundle.to_dict()
 
             return plan
@@ -492,3 +502,11 @@ class IntelliWarmRuntime:
         """Run one optimization pass across all initialized rooms."""
         for room_name in self.room_names:
             self.optimize_heating_plan(room_name)
+
+    def get_room_report(self, room_name: str, limit: int = 10) -> Optional[Dict[str, Any]]:
+        """Return a persisted report for a single room."""
+        return self.report_service.build_room_report(room_name, limit=limit)
+
+    def get_portfolio_report(self, limit_per_room: int = 5) -> Dict[str, Any]:
+        """Return an aggregated report across all rooms."""
+        return self.report_service.build_portfolio_report(limit_per_room=limit_per_room)

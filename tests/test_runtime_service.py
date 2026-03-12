@@ -203,3 +203,59 @@ def test_optimize_heating_plan_includes_forecast_bundle(tmp_path):
     assert plan is not None
     assert "forecast_bundle" in plan
     assert len(plan["forecast_bundle"]["steps"]) == runtime.config.optimization_horizon
+
+
+def test_room_report_includes_controller_metadata(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=19.0,
+        initial_occupancy=True,
+    )
+
+    runtime.optimize_heating_plan(
+        "bedroom",
+        occupancy_override=[1.0] * runtime.config.optimization_horizon,
+        controller_type="baseline",
+    )
+
+    report = runtime.get_room_report("bedroom")
+
+    assert report is not None
+    assert report["summary"]["optimization_runs"] == 1
+    assert report["summary"]["last_controller_type"] == "baseline"
+    assert report["recent_optimizations"][0]["action_label"] == "PREHEAT"
+
+
+def test_portfolio_report_aggregates_room_runs(tmp_path):
+    runtime = create_runtime(tmp_path)
+    for room_name in ("bedroom", "office"):
+        runtime.add_room(
+            name=room_name,
+            room_size=150,
+            zone="Residential",
+            room_config={
+                "zone": "Residential",
+                "target_temp": 21,
+                "occupancy_schedule": "9-18",
+            },
+            initial_sensor_temp=19.5,
+            initial_occupancy=True,
+        )
+        runtime.optimize_heating_plan(
+            room_name,
+            occupancy_override=[1.0] * runtime.config.optimization_horizon,
+            controller_type="baseline",
+        )
+
+    report = runtime.get_portfolio_report()
+
+    assert report["room_count"] == 2
+    assert report["optimization_runs"] == 2

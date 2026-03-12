@@ -33,7 +33,8 @@ The current repo should be treated as an incremental architecture, not a greenfi
 
 ### Persistence Layer
 
-- `intelliwarm/storage/database.py`: SQLite storage for rooms, logs, optimization runs, and model parameters
+- `intelliwarm/storage/database.py`: SQLite storage for rooms, logs, optimization runs, and reporting queries
+- `intelliwarm/services/reporting.py`: report assembly on top of the current SQLite layer
 
 ## Current Architectural Rules
 
@@ -46,7 +47,5 @@ The current repo should be treated as an incremental architecture, not a greenfi
 
 ## Immediate Architecture Targets
 
-1. Add hardware adapter boundaries for sensors and HVAC devices with simulation fallback.
-2. Break route logic out of `app.py` into dashboard-focused modules.
-3. Move config handling toward typed models without breaking `configs/config.yaml`.
-4. Extend persistence and reporting on top of the current SQLite workflow.
+1. Extend persistence and reporting on top of the current SQLite workflow.
+2. Add live runtime safety and observability for deployment-oriented operation.

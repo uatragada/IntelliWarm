@@ -23,7 +23,7 @@ from .pricing import EnergyPriceService
 from .optimizer import MPCController
 from .control import BaselineController, DeviceController
 from .storage import Database
-from .services import ForecastBundleService, IntelliWarmRuntime
+from .services import ForecastBundleService, IntelliWarmRuntime, ReportService
 
 __all__ = [
     "SystemConfig",
@@ -46,4 +46,5 @@ __all__ = [
     "Database",
     "ForecastBundleService",
     "IntelliWarmRuntime",
+    "ReportService",
 ]

@@ -46,11 +46,17 @@
 - structured occupancy schedules are preserved through typed room config assembly
 - the existing `weather_api` section is now represented by typed config state instead of being ignored
 
+### Persistence Foundation
+
+- SQLite optimization runs now persist controller type and action labels for reporting
+- room and portfolio reports are assembled through `intelliwarm/services/reporting.py`
+- reporting stays on top of the existing SQLite workflow without a storage migration framework
+
 ## Next Priority Order
 
-### 1. Persistence And Reporting
+### 1. Runtime Safety And Observability
 
-Extend the current SQLite layer with richer repositories and report-generation support.
+Add deployment-oriented runtime guardrails, reporting signals, and operator-facing safety visibility.
 
 ## Deferred Until Later
 
