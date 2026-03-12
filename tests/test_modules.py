@@ -8,12 +8,13 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from intelliwarm.data import HeatingAction, RoomConfig
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.optimizer import MPCController, CostFunction
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.pricing import EnergyPriceService
 from intelliwarm.sensors import SensorManager
-from intelliwarm.control import DeviceController
+from intelliwarm.control import BaselineController, DeviceController
 from intelliwarm.core import SystemConfig
 
 
@@ -52,7 +53,7 @@ class TestThermalModel:
     
     def test_temperature_prediction_heating(self):
         """Test temperature increases with heating"""
-        model = RoomThermalModel("bedroom", alpha=0.1, beta=0.05)
+        model = RoomThermalModel("bedroom", alpha=1.8, beta=0.05)
         
         # Predict with heating
         predictions = model.predict_temperature(
@@ -171,6 +172,75 @@ class TestOptimizer:
         # Actions should be normalized [0, 1]
         assert all(0 <= a <= 1 for a in plan["optimal_actions"])
         assert plan["total_cost"] >= 0
+
+
+class TestBaselineController:
+    """Test explainable baseline control decisions."""
+
+    def _controller(self):
+        return BaselineController(
+            room_config=RoomConfig.from_legacy_config(
+                "bedroom",
+                {
+                    "zone": "Residential",
+                    "target_temp": 21,
+                    "target_min_temp": 20,
+                    "target_max_temp": 22,
+                    "heater_power": 1500,
+                    "thermal_mass": 0.05,
+                    "heating_efficiency": 0.9,
+                    "occupancy_schedule": "9-18",
+                },
+            ),
+            min_temperature=18,
+            max_temperature=24,
+        )
+
+    def test_baseline_selects_preheat_for_cold_occupied_room(self):
+        controller = self._controller()
+
+        decision = controller.compute_decision(
+            current_temp=18.8,
+            occupancy_forecast=[0.9] * 6,
+            energy_prices=[0.12] * 6,
+            current_action=0.0,
+            outside_temp=0.0,
+            target_temp=21.0,
+        )
+
+        assert decision.action == HeatingAction.PREHEAT
+        assert "occupied" in decision.rationale.lower()
+        assert decision.to_dict()["next_action_label"] == "PREHEAT"
+
+    def test_baseline_selects_off_when_unoccupied_and_warm(self):
+        controller = self._controller()
+
+        decision = controller.compute_decision(
+            current_temp=21.5,
+            occupancy_forecast=[0.1] * 6,
+            energy_prices=[0.12] * 6,
+            current_action=0.0,
+            outside_temp=6.0,
+            target_temp=21.0,
+        )
+
+        assert decision.action == HeatingAction.OFF
+        assert any("unoccupied" in reason.lower() for reason in decision.reasons)
+
+    def test_baseline_holds_previous_action_to_reduce_chatter(self):
+        controller = self._controller()
+
+        decision = controller.compute_decision(
+            current_temp=20.05,
+            occupancy_forecast=[0.1] * 6,
+            energy_prices=[0.12] * 6,
+            current_action=HeatingAction.ECO.power_level,
+            outside_temp=1.0,
+            target_temp=21.0,
+        )
+
+        assert decision.action == HeatingAction.ECO
+        assert any("chatter" in reason.lower() for reason in decision.reasons)
 
 
 # ============================================================================

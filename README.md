@@ -1,333 +1,184 @@
-# IntelliWarm — Intelligent HVAC Optimization Platform
+# IntelliWarm
 
-**Version 1.0** | **Status: In Development**
+IntelliWarm is a Python and Flask project for intelligent HVAC optimization with a real-world deployment target. Simulation is a core capability for validation and safe iteration, but the platform is being built to control real HVAC hardware through explicit integration boundaries.
 
-IntelliWarm is an intelligent heating optimization system designed to minimize energy costs while maintaining occupant comfort. It combines predictive thermal modeling, occupancy forecasting, and Model Predictive Control (MPC) to dynamically optimize heating schedules.
+## Current Focus
 
----
+The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can continue implementation with high alignment and low drift.
 
-## 🎯 System Overview
+Current completed foundations:
 
-IntelliWarm acts as a **decision engine** between sensors and HVAC systems, providing:
+- runtime orchestration extracted to `intelliwarm/services/runtime.py`
+- Flask bootstrap and route wiring centralized in `intelliwarm/services/application.py`
+- typed YAML config loading with environment overrides in `intelliwarm/core/config.py`
+- typed simulation primitives in `intelliwarm/data/models.py`
+- explainable baseline controller in `intelliwarm/control/baseline_controller.py`
+- deterministic multi-room simulation in `intelliwarm/models/simulator.py`
+- thermal step and simulate APIs in `intelliwarm/models/thermal_model.py`
+- timestamp-aware occupancy prediction in `intelliwarm/prediction/occupancy_model.py`
+- focused regression tests for runtime, simulation, config, and app bootstrap
 
-- **Real-time Temperature Monitoring**: Aggregates sensor data from multiple rooms
-- **Predictive Thermal Modeling**: Learns room thermal dynamics and predicts future temperatures
-- **Occupancy Forecasting**: Predicts when rooms are occupied to optimize comfort
-- **Cost-Based Optimization**: Uses MPC to minimize energy costs while respecting comfort constraints
-- **Device Control**: Communicates with smart thermostats, plugs, and relays
-- **Historical Analytics**: Logs all sensor data, optimization decisions, and energy costs
+Real-world direction now explicitly includes:
 
-**Primary Goal**: Minimize energy cost while maintaining comfort constraints.
+- hardware adapter interfaces for sensors and device actuation
+- deployment-safe runtime behavior with fallback simulation mode
+- observability and persistence for field diagnostics and reporting
+- incremental hardening for production usage (safety, reliability, and operability)
 
----
+## Repository Map
 
-## 📦 Architecture
-
-The system is structured into modular services:
-
-```
+```text
 IntelliWarm/
+├── AGENTS.md
+├── .github/copilot-instructions.md
+├── app.py
+├── configs/
+├── docs/
 ├── intelliwarm/
-│   ├── sensors/          → Temperature & occupancy sensors
-│   ├── models/           → Thermal dynamics model
-│   ├── prediction/       → Occupancy prediction engine
-│   ├── pricing/          → Energy price management
-│   ├── optimizer/        → MPC optimization controller
-│   ├── control/          → Device control interface
-│   ├── storage/          → SQLite database layer
-│   ├── learning/         → Model retraining pipeline
-│   └── core/             → Config & scheduler
-├── configs/              → Configuration files (YAML)
-├── app.py                → Flask web application
-└── templates/            → HTML templates
+│   ├── core/
+│   ├── control/
+│   ├── data/
+│   ├── learning/
+│   ├── models/
+│   ├── optimizer/
+│   ├── prediction/
+│   ├── pricing/
+│   ├── sensors/
+│   ├── services/
+│   └── storage/
+├── templates/
+└── tests/
 ```
 
-### Key Components
+## Architecture Summary
 
-| Module | Purpose | Key Classes |
-|--------|---------|-------------|
-| **Sensors** | Collects temperature & occupancy data | `SensorManager`, `TemperatureSensor`, `OccupancySensor` |
-| **Models** | Thermal dynamics prediction | `RoomThermalModel` |
-| **Prediction** | Occupancy forecasting | `OccupancyPredictor` |
-| **Pricing** | Energy price management | `EnergyPriceService` |
-| **Optimizer** | MPC cost minimization | `MPCController`, `CostFunction` |
-| **Control** | Device command execution | `DeviceController`, `SimulatedHeater` |
-| **Storage** | Data persistence | `Database` (SQLite) |
+- `app.py`: Flask entrypoint
+- `intelliwarm/services/application.py`: Flask app/bootstrap wiring and route registration
+- `intelliwarm/services/runtime.py`: application orchestration and demo/runtime state
+- `intelliwarm/core/config.py`: typed config loading for YAML plus `INTELLIWARM_*` environment overrides
+- `intelliwarm/models/thermal_model.py`: room thermal dynamics
+- `intelliwarm/models/simulator.py`: deterministic multi-room simulation
+- `intelliwarm/prediction/occupancy_model.py`: schedule and timestamp-based occupancy prediction
+- `intelliwarm/optimizer/mpc_controller.py`: current MPC implementation
+- `intelliwarm/storage/database.py`: SQLite persistence layer
 
----
+See `docs/architecture.md` for the working architecture and `docs/roadmap.md` for current sequencing.
 
-## 🚀 Quick Start
-
-### 1. Installation
+## Quick Start
 
 ```bash
-# Clone repository
-git clone https://github.com/uatragada/IntelliWarm.git
-cd IntelliWarm
-
-# Install dependencies
 pip install -r requirements.txt
+pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules.py
+python app.py
 ```
 
-### 2. Configure System
+Then open `http://localhost:5000`.
 
-Edit `configs/config.yaml` to define:
-- Room configurations (target temps, heater power)
-- Comfort constraints
-- Energy prices
-- Optimization parameters
+Configuration is loaded from `configs/config.yaml`. You can override common values with `INTELLIWARM_*` environment variables, and `${ENV_NAME}` placeholders in the YAML are resolved at load time.
 
-Example:
-```yaml
-rooms:
-  bedroom1:
-    zone: "Residential"
-    room_size: 150  # sq ft
-    target_temp: 21
-    heater_power: 1500  # watts
-    occupancy_schedule: "9-18"  # 9am-6pm
-```
+## Deployment Intent
 
-### 3. Run Application
+IntelliWarm should support two operating modes:
+
+- Simulation mode for deterministic testing, policy comparison, and offline development
+- Live mode for real hardware integration through controlled adapters, safety checks, and runtime guardrails
+
+All new control features should be designed to run in both modes using shared action and forecast contracts.
+
+## Copilot Autopilot
+
+For high-alignment Copilot CLI runs, keep the work bounded and let the agent use the repo guidance files in this order:
+
+1. `AGENTS.md`
+2. `.github/copilot-instructions.md`
+3. `docs/roadmap.md`
+4. `docs/architecture.md`
+5. `docs/srs.md`
+
+Recommended command:
 
 ```bash
-# Start Flask application
-python app.py
-
-# Visit: http://localhost:5000
+copilot --autopilot --yolo --max-autopilot-continues 20
 ```
 
-### 4. Load Demo Data
+The repo now includes explicit instructions and prompts for that flow.
 
-Click "Load Demo" to populate with sample rooms from CSV data.
+## Current Priority Queue
 
----
+1. Forecast bundle service for aligned occupancy, weather, and price horizons.
+2. Hardware integration boundary for real sensors and HVAC actuators.
+3. Route modularization into thin Flask modules.
+4. Typed config evolution on top of `configs/config.yaml`.
+5. Runtime safety and observability improvements for live deployments.
 
-## 🏗️ Phase 1 — Core MVP (Current Phase)
+## Testing
 
-- [x] Sensor data ingestion module
-- [x] Thermal model with parameter learning
-- [x] MPC cost minimization optimization
-- [x] Simulation environment (no real device control)
-- [x] Database storage layer
-- [x] Flask dashboard scaffolding
+Focused verification for shared model and runtime work:
 
-### Running the System
-
-```python
-from intelliwarm.core import SystemConfig
-from intelliwarm.sensors import SensorManager
-from intelliwarm.models import RoomThermalModel
-from intelliwarm.optimizer import MPCController
-
-# Load config
-config = SystemConfig("configs/config.yaml")
-
-# Initialize sensors
-sensors = SensorManager()
-sensors.register_temperature_sensor("bedroom", 20.0)
-
-# Create thermal model
-model = RoomThermalModel("bedroom", alpha=0.1, beta=0.05)
-
-# Create optimizer
-optimizer = MPCController(config, model)
-
-# Compute optimal plan
-plan = optimizer.compute_optimal_plan(
-    room_name="bedroom",
-    current_temp=20.0,
-    outside_temp=5.0,
-    target_temp=21.0,
-    energy_prices=[0.12] * 24,
-    occupancy_probs=[0.1] * 9 + [0.8] * 9 + [0.1] * 6,
-    current_action=0.0
-)
-
-print(f"Optimal heating actions: {plan['optimal_actions']}")
-print(f"Predicted temperatures: {plan['predicted_temperatures']}")
-print(f"Total cost: ${plan['total_cost']:.2f}")
+```bash
+pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules.py tests/test_config_loading.py tests/test_app_bootstrap.py
 ```
 
----
-
-## 🔄 Thermal Model
-
-The system models room heating dynamics:
-
-```
-T(t+1) = T(t) + α*H(t) - β*(T(t) - T_outside)
-```
-
-Where:
-- **T(t)** = room temperature at time t
-- **H(t)** = heating power (0-1, normalized)
-- **α** = heating efficiency coefficient
-- **β** = heat loss coefficient
-
-Parameters are automatically learned from historical sensor data using least squares estimation.
-
----
-
-## 📊 Cost Optimization
-
-The MPC optimizer minimizes:
-
-```
-Cost = Energy_Cost + λ₁*Discomfort_Penalty + λ₂*Switching_Penalty
-```
-
-Where:
-- **Energy_Cost** = heating duration × energy price
-- **Discomfort_Penalty** = penalty for temperature deviations outside comfort zone
-- **Switching_Penalty** = penalty for frequent on/off cycles
-
----
-
-## 💾 Database
-
-SQLite database stores:
-- Room configurations
-- Temperature logs
-- Occupancy predictions
-- Energy prices
-- Optimization decisions
-- Model parameters
-
-Access via the `Database` class:
-
-```python
-from intelliwarm.storage import Database
-
-db = Database("intelliwarm.db")
-
-# Log temperature
-db.add_temperature_log("bedroom", temp=20.5, humidity=45, outside_temp=5.0)
-
-# Get history
-history = db.get_temperature_history("bedroom", limit=100)
-
-# Save thermal model parameters
-db.save_model_parameters("bedroom", alpha=0.12, beta=0.048)
-```
-
----
-
-## 🌐 API Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/` | GET | Dashboard |
-| `/add_room` | GET/POST | Add new room |
-| `/config_home` | GET/POST | Configure zones & prices |
-| `/demo` | GET | Load demo data |
-| `/api/rooms` | GET | Get all rooms (JSON) |
-| `/api/optimization/<room>` | GET | Get optimization plan |
-
----
-
-## Phase 2 — Smart System (Planned)
-
-- [ ] Integration with real weather APIs
-- [ ] Occupancy learning from historical data
-- [ ] Multi-room optimization (shared resources)
-- [ ] Bayesian occupancy prediction model
-- [ ] Advanced dashboard with heatmaps
-
----
-
-## Phase 3 — Production (Planned)
-
-- [ ] Real device control (smart plugs, thermostats)
-- [ ] Cloud deployment (Azure, AWS)
-- [ ] Multi-building scaling
-- [ ] RL-based adaptive control
-- [ ] Mobile app
-
----
-
-## 🧪 Testing
-
-Run unit tests:
+Full suite:
 
 ```bash
 pytest tests/
 ```
 
-Key test files:
-- `tests/test_thermal_model.py`
-- `tests/test_optimizer.py`
-- `tests/test_database.py`
+## Documentation Index
 
----
+- `QUICKSTART.md`: local setup and execution
+- `CONTRIBUTING.md`: development workflow
+- `docs/architecture.md`: current working architecture
+- `docs/roadmap.md`: milestone sequence and active next work
+- `docs/copilot-prompts.md`: reusable prompts for bounded Copilot tasks
+- `docs/srs.md`: repo-grounded product and system requirements
 
-## 📚 Documentation
-
-- **[SRS Document](docs/SRS.md)** — Full Software Requirements Specification
-- **[Architecture Guide](docs/ARCHITECTURE.md)** — System design details
-- **[API Reference](docs/API.md)** — Python module documentation
-
----
-
-## 🛠️ Technology Stack
+## Technology Stack
 
 | Component | Technology |
 |-----------|-----------|
 | Backend | Python 3.9+, Flask |
 | ML/Optimization | NumPy, SciPy, scikit-learn |
-| Database | SQLite (MVP) / PostgreSQL (production) |
+| Database | SQLite |
 | Configuration | YAML |
 | Frontend | HTML/CSS/JavaScript (Plotly) |
 
----
+## Contributing
 
-## 🤝 Contributing
+Contributions are welcome, especially in the current bounded work areas:
 
-Contributions welcome! Areas for enhancement:
+1. Baseline controller with explainable discrete actions.
+2. Forecast bundle service for aligned occupancy, outdoor temperature, and pricing horizons.
+3. Flask route modularization into thin service-backed modules.
+4. Typed config validation layered on `configs/config.yaml`.
+5. Persistence and reporting improvements on top of the current SQLite workflow.
 
-1. **Real device integration** — Smart plugs, thermostats, relays
-2. **Weather API integration** — OpenWeatherMap, NOAA
-3. **ML forecasting** — ARIMA, LSTM for occupancy
-4. **Reinforcement learning** — Q-learning for adaptive control
-5. **Multi-zone optimization** — Coupling between rooms
-6. **Cloud deployment** — Docker, Kubernetes
+Before making non-trivial changes, read:
 
----
+1. `AGENTS.md`
+2. `.github/copilot-instructions.md`
+3. `docs/roadmap.md`
+4. `docs/architecture.md`
+5. `docs/srs.md`
 
-## 📄 License
+See `CONTRIBUTING.md` for the development workflow.
 
-MIT License — See LICENSE file
+## License
 
----
+No standalone license file is currently included in the repository.
 
-## 👤 Author
+## Author
 
 **Uday Atragada** — [GitHub](https://github.com/uatragada)
 
----
-
-## 🔗 References
-
-- Research: HVAC Optimization via MPC ([GitHub Link](https://github.com))
-- Energy Efficiency: Building automation best practices
-- Control Theory: Model Predictive Control fundamentals
-
----
-
-## ❓ FAQ
+## FAQ
 
 **Q: Does IntelliWarm control real HVAC systems?**  
-A: Currently, it runs in simulation mode. Phase 3 will add real device control via smart plugs/thermostats.
-
-**Q: What's the optimization speed?**  
-A: Target < 2 seconds per room per cycle (configurable in `config.yaml`).
+A: That is a core product goal. The platform uses simulation as a safe development and validation layer, while architecture and roadmap decisions are expected to support real hardware integrations.
 
 **Q: Can I use this in production?**  
-A: Phase 1 is for MVP/research. Production deployment requires Phase 3 completion.
+A: Production readiness is in progress. You should expect staged rollout practices, adapter-level safety controls, and deployment hardening before broad live operation.
 
-**Q: How is occupancy predicted?**  
-A: Currently rule-based via schedules. Phase 2 will add ML-based prediction.
-
----
-
-**Last Updated**: March 2026
+**Q: How is occupancy predicted today?**  
+A: The current codebase includes schedule-based and timestamp-aware occupancy prediction in `intelliwarm/prediction/occupancy_model.py`.
