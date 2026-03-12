@@ -16,6 +16,7 @@ Current completed foundations:
 - aligned forecast bundle service in `intelliwarm/services/forecast_bundle.py`
 - hardware-ready sensor and actuator backends with simulation fallback
 - modular Flask routes under `intelliwarm/routes/`
+- typed config validation and preserved structured schedule support in `intelliwarm/core/config.py`
 - deterministic multi-room simulation in `intelliwarm/models/simulator.py`
 - thermal step and simulate APIs in `intelliwarm/models/thermal_model.py`
 - timestamp-aware occupancy prediction in `intelliwarm/prediction/occupancy_model.py`
@@ -108,7 +109,7 @@ The repo now includes explicit instructions and prompts for that flow.
 
 ## Current Priority Queue
 
-1. Typed config evolution on top of `configs/config.yaml`.
+1. Persistence and reporting improvements on top of SQLite.
 2. Runtime safety and observability improvements for live deployments.
 
 ## Testing

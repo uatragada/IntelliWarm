@@ -62,7 +62,7 @@ def create_runtime_bootstrap(
 
     resolved_database_path = _resolve_database_path(project_root, database_path or config.database_path)
     database = Database(str(resolved_database_path))
-    default_device_id = config.state.devices.thermostat_id or config.state.devices.smart_plug_id
+    default_device_id = config.thermostat_id or config.smart_plug_id
     sensor_manager = SensorManager.with_hardware_fallback()
     device_controller = DeviceController.with_hardware_fallback(
         enable_hardware=config.enable_device_control,

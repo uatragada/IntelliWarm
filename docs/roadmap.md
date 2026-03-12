@@ -40,13 +40,15 @@
 - dashboard/form handlers remain thin and delegate room/config behavior to runtime services
 - demo routes are isolated from dashboard routes while preserving existing endpoints
 
+### Config Foundation
+
+- `SystemConfig` now validates core comfort, runtime, device, weather, and room settings on load
+- structured occupancy schedules are preserved through typed room config assembly
+- the existing `weather_api` section is now represented by typed config state instead of being ignored
+
 ## Next Priority Order
 
-### 1. Typed Config Evolution
-
-Layer typed config validation on top of `configs/config.yaml` without breaking the current runtime.
-
-### 2. Persistence And Reporting
+### 1. Persistence And Reporting
 
 Extend the current SQLite layer with richer repositories and report-generation support.
 

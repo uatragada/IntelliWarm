@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 import yaml
 
@@ -123,7 +123,7 @@ class RoomSettings:
     heater_power: float = 1500.0
     thermal_mass: float = 0.05
     heating_efficiency: float = 0.85
-    occupancy_schedule: str = ""
+    occupancy_schedule: Union[str, List[Dict[str, Any]]] = ""
     initial_sensor_temp: Optional[float] = None
     initial_occupancy: bool = False
     display_temp_f: Optional[float] = None
@@ -156,6 +156,14 @@ class DeviceSettings:
 
 
 @dataclass(frozen=True)
+class WeatherApiSettings:
+    enabled: bool = False
+    provider: str = ""
+    api_key: str = ""
+    update_interval: int = 3600
+
+
+@dataclass(frozen=True)
 class LoggingSettings:
     file: str = "logs/intelliwarm.log"
     max_size: str = "10MB"
@@ -172,7 +180,12 @@ class ConfigState:
     zones: Dict[str, ZoneSettings] = field(default_factory=dict)
     database: DatabaseSettings = field(default_factory=DatabaseSettings)
     devices: DeviceSettings = field(default_factory=DeviceSettings)
+    weather_api: WeatherApiSettings = field(default_factory=WeatherApiSettings)
     logging: LoggingSettings = field(default_factory=LoggingSettings)
+
+
+class ConfigValidationError(ValueError):
+    """Raised when the loaded IntelliWarm config is invalid."""
 
 
 class SystemConfig:
@@ -214,8 +227,58 @@ class SystemConfig:
             zones=zones,
             database=DatabaseSettings(**config.get("database", {})),
             devices=DeviceSettings(**config.get("devices", {})),
+            weather_api=WeatherApiSettings(**config.get("weather_api", {})),
             logging=LoggingSettings(**config.get("logging", {})),
         )
+
+    def _validate_state(self, state: ConfigState):
+        if state.system.poll_interval <= 0:
+            raise ConfigValidationError("system.poll_interval must be greater than zero")
+
+        if state.system.optimization_horizon <= 0:
+            raise ConfigValidationError("system.optimization_horizon must be greater than zero")
+
+        if state.system.max_optimization_time <= 0:
+            raise ConfigValidationError("system.max_optimization_time must be greater than zero")
+
+        if state.comfort.min_temperature >= state.comfort.max_temperature:
+            raise ConfigValidationError("comfort.min_temperature must be lower than comfort.max_temperature")
+
+        if not (state.comfort.min_temperature <= state.comfort.default_target <= state.comfort.max_temperature):
+            raise ConfigValidationError("comfort.default_target must stay within the configured comfort band")
+
+        if state.energy.electricity_price < 0 or state.energy.gas_price < 0:
+            raise ConfigValidationError("energy prices must be non-negative")
+
+        if state.database.type not in {"sqlite", "postgresql"}:
+            raise ConfigValidationError("database.type must be either 'sqlite' or 'postgresql'")
+
+        if state.devices.enable_control and not (state.devices.smart_plug_id or state.devices.thermostat_id):
+            raise ConfigValidationError(
+                "devices.enable_control requires a smart_plug_id or thermostat_id for live control"
+            )
+
+        if state.weather_api.enabled and not state.weather_api.provider:
+            raise ConfigValidationError("weather_api.provider is required when weather_api.enabled is true")
+
+        if state.weather_api.update_interval <= 0:
+            raise ConfigValidationError("weather_api.update_interval must be greater than zero")
+
+        for room_name, room in state.rooms.items():
+            if room.room_size <= 0:
+                raise ConfigValidationError(f"rooms.{room_name}.room_size must be greater than zero")
+
+            if room.heater_power <= 0:
+                raise ConfigValidationError(f"rooms.{room_name}.heater_power must be greater than zero")
+
+            if room.thermal_mass <= 0:
+                raise ConfigValidationError(f"rooms.{room_name}.thermal_mass must be greater than zero")
+
+            if room.heating_efficiency <= 0:
+                raise ConfigValidationError(f"rooms.{room_name}.heating_efficiency must be greater than zero")
+
+            if room.humidity < 0 or room.humidity > 100:
+                raise ConfigValidationError(f"rooms.{room_name}.humidity must be between 0 and 100")
 
     @property
     def debug(self) -> bool:
@@ -288,19 +351,26 @@ class SystemConfig:
         overrides: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         room_config = self.get_room_config(room_name) if room_name else {}
+        raw_room_config = dict(self.config.get("rooms", {}).get(room_name, {})) if room_name else {}
         resolved = {
             "zone": zone or room_config.get("zone", "Unassigned"),
             "room_size": float(room_config.get("room_size", 150.0)),
-            "target_temp": float(room_config.get("target_temp", self.default_target_temp)),
-            "heater_power": float(room_config.get("heater_power", 1500.0)),
-            "thermal_mass": float(room_config.get("thermal_mass", 0.05)),
-            "heating_efficiency": float(room_config.get("heating_efficiency", 0.85)),
-            "occupancy_schedule": str(room_config.get("occupancy_schedule", "")),
-            "initial_sensor_temp": room_config.get("initial_sensor_temp"),
-            "initial_occupancy": bool(room_config.get("initial_occupancy", False)),
-            "display_temp_f": room_config.get("display_temp_f"),
-            "humidity": float(room_config.get("humidity", 45.0)),
-            "heating_source": str(room_config.get("heating_source", "Off")),
+            "target_temp": float(raw_room_config.get("target_temp", self.default_target_temp)),
+            "heater_power": float(raw_room_config.get("heater_power", room_config.get("heater_power", 1500.0))),
+            "thermal_mass": float(raw_room_config.get("thermal_mass", room_config.get("thermal_mass", 0.05))),
+            "heating_efficiency": float(
+                raw_room_config.get("heating_efficiency", room_config.get("heating_efficiency", 0.85))
+            ),
+            "occupancy_schedule": copy.deepcopy(
+                raw_room_config.get("occupancy_schedule", room_config.get("occupancy_schedule", ""))
+            ),
+            "initial_sensor_temp": raw_room_config.get("initial_sensor_temp", room_config.get("initial_sensor_temp")),
+            "initial_occupancy": bool(
+                raw_room_config.get("initial_occupancy", room_config.get("initial_occupancy", False))
+            ),
+            "display_temp_f": raw_room_config.get("display_temp_f", room_config.get("display_temp_f")),
+            "humidity": float(raw_room_config.get("humidity", room_config.get("humidity", 45.0))),
+            "heating_source": str(raw_room_config.get("heating_source", room_config.get("heating_source", "Off"))),
         }
         if overrides:
             resolved.update(dict(overrides))
@@ -319,9 +389,22 @@ class SystemConfig:
         return self.state.devices.enable_control
 
     @property
+    def smart_plug_id(self) -> str:
+        return self.state.devices.smart_plug_id
+
+    @property
+    def thermostat_id(self) -> str:
+        return self.state.devices.thermostat_id
+
+    @property
+    def weather_api_config(self) -> Dict[str, Any]:
+        return asdict(self.state.weather_api)
+
+    @property
     def logging_config(self) -> Dict[str, Any]:
         return asdict(self.state.logging)
 
     def reload(self):
         self.config = self._load_config()
         self.state = self._build_state(self.config)
+        self._validate_state(self.state)
