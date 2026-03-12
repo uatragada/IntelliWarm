@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from intelliwarm.data import HeatingAction, HeatSourceType, RoomConfig, SimulationState
-from intelliwarm.models.thermal_model import solar_irradiance_wm2
+from intelliwarm.models.thermal_model import sol_rad_tilt_wm2, solar_irradiance_wm2
 from intelliwarm.prediction import OccupancyPredictor
 
 
@@ -18,9 +18,13 @@ class HouseSimulator:
     When the thermal model for a room accepts ``solar_irradiance_w_m2`` and
     ``occupancy`` keyword arguments (i.e. both :class:`RoomThermalModel` and
     :class:`PhysicsRoomThermalModel`), the simulator automatically provides
-    them.  Solar irradiance is derived from the simulation timestamp using the
-    built-in astronomical clear-sky model; occupancy comes from the per-room
-    predictors or the room config schedule.
+    them.
+
+    **Per-room solar irradiance** — if the model has ``solar_tilt_deg`` and
+    ``solar_azimuth_deg`` attributes (i.e. :class:`PhysicsRoomThermalModel`),
+    :func:`sol_rad_tilt_wm2` is used to compute the irradiance on that
+    surface orientation.  Otherwise the site-level GHI from
+    :func:`solar_irradiance_wm2` is used as a fallback.
 
     Args:
         room_configs:          Mapping of room_id → :class:`RoomConfig`.
@@ -28,6 +32,9 @@ class HouseSimulator:
         occupancy_predictors:  Optional per-room occupancy predictors.
         latitude_deg:          Site latitude for solar irradiance [°N].
         cloud_cover:           Constant fractional cloud cover [0–1].
+        albedo:                Ground reflectance [0–1] used in the tilted
+                               solar calculation.  0.20 = typical grass /
+                               asphalt; 0.60 = fresh snow.
     """
 
     def __init__(
@@ -37,12 +44,14 @@ class HouseSimulator:
         occupancy_predictors: Optional[Dict[str, OccupancyPredictor]] = None,
         latitude_deg: float = 40.0,
         cloud_cover: float = 0.0,
+        albedo: float = 0.20,
     ):
         self.room_configs = room_configs
         self.thermal_models = thermal_models
         self.occupancy_predictors = occupancy_predictors or {}
         self.latitude_deg = latitude_deg
         self.cloud_cover = cloud_cover
+        self.albedo = albedo
 
     def _resolve_action(self, action: object) -> HeatingAction:
         return HeatingAction.from_value(action)
@@ -74,16 +83,31 @@ class HouseSimulator:
         next_temperatures: Dict[str, float] = {}
         resolved_actions: Dict[str, HeatingAction] = {}
 
-        solar_w_m2 = solar_irradiance_wm2(
-            resolved_timestamp,
-            latitude_deg=self.latitude_deg,
-            cloud_cover=self.cloud_cover,
-        )
-
         for room_name, current_temp in state.room_temperatures.items():
             action = self._resolve_action(heating_actions.get(room_name, HeatingAction.OFF))
             resolved_actions[room_name] = action
             occupancy_val = self._occupancy_for_timestamp(room_name, resolved_timestamp)
+
+            # Per-room solar irradiance: use tilted surface model when the
+            # thermal model exposes orientation attributes, else fall back to GHI.
+            model = self.thermal_models[room_name]
+            tilt = getattr(model, "solar_tilt_deg", None)
+            azimuth = getattr(model, "solar_azimuth_deg", None)
+            if tilt is not None and azimuth is not None:
+                solar_w_m2 = sol_rad_tilt_wm2(
+                    resolved_timestamp,
+                    latitude_deg=self.latitude_deg,
+                    surface_tilt_deg=tilt,
+                    surface_azimuth_deg=azimuth,
+                    cloud_cover=self.cloud_cover,
+                    albedo=self.albedo,
+                )
+            else:
+                solar_w_m2 = solar_irradiance_wm2(
+                    resolved_timestamp,
+                    latitude_deg=self.latitude_deg,
+                    cloud_cover=self.cloud_cover,
+                )
 
             # Route the action to the correct heat input based on the
             # room's active heat source stored in the simulation state.
@@ -95,7 +119,7 @@ class HouseSimulator:
                 electric_frac = action.power_level
                 furnace_frac = 0.0
 
-            next_temperatures[room_name] = self.thermal_models[room_name].step(
+            next_temperatures[room_name] = model.step(
                 current_temp=current_temp,
                 outside_temp=state.outdoor_temp,
                 heating_power=electric_frac,

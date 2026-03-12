@@ -89,9 +89,111 @@ def solar_irradiance_wm2(
     return max(0.0, ghi_clear * cloud_factor)
 
 
-# ---------------------------------------------------------------------------
-# Legacy first-order model
-# ---------------------------------------------------------------------------
+def sol_rad_tilt_wm2(
+    timestamp: datetime,
+    latitude_deg: float = 40.0,
+    surface_tilt_deg: float = 90.0,
+    surface_azimuth_deg: float = 0.0,
+    cloud_cover: float = 0.0,
+    albedo: float = 0.20,
+) -> float:
+    """
+    Estimate solar irradiance on a tilted surface [W/m²].
+
+    Combines the built-in clear-sky GHI model with the **Duffie-Beckman**
+    incidence-angle model (*Solar Engineering of Thermal Processes*, 5th ed.,
+    eq. 1.6.2) to decompose irradiance into:
+
+    * **Direct (beam)** — ``DNI × cos θ`` where θ is the angle between the
+      surface normal and the sun direction.
+    * **Diffuse (sky)** — isotropic sky model:
+      ``DHI × (1 + cos β) / 2``.
+    * **Reflected (ground)** — ``GHI × albedo × (1 − cos β) / 2``.
+
+    The beam/diffuse split uses a simple cloud-cover-based diffuse fraction
+    (15 % on clear days, 100 % on fully overcast days), consistent with the
+    Erbs correlation at the extremes.
+
+    Surface orientation convention (Duffie 2020 / dm4bem):
+
+    ============== ===============================================================
+    Parameter       Description
+    ============== ===============================================================
+    tilt = 0°       Horizontal (skylight faces up)
+    tilt = 90°      Vertical (wall or window)
+    azimuth = 0°    South-facing
+    azimuth = +90°  West-facing
+    azimuth = −90°  East-facing
+    azimuth = 180°  North-facing
+    ============== ===============================================================
+
+    Args:
+        timestamp:            Local solar time.
+        latitude_deg:         Site latitude [°N].
+        surface_tilt_deg:     Surface tilt from horizontal [°].  0=horizontal,
+                              90=vertical.
+        surface_azimuth_deg:  Surface azimuth [°].  0=south, +90=west, −90=east.
+        cloud_cover:          Fractional sky cloud cover [0–1].
+        albedo:               Ground reflectance [0–1].  Typical values:
+                              0.20 = grass/asphalt, 0.60 = fresh snow.
+
+    Returns:
+        Total solar irradiance on the tilted surface [W/m²] (≥ 0).
+
+    References:
+        J. A. Duffie, W. A. Beckman, N. Blair (2020) *Solar Engineering of
+        Thermal Processes*, 5th ed., Wiley, eq. 1.6.2.
+        Réglementation Thermique 2005 (Th-CE 2005), §11.2.1.
+
+        C. Ghiaus (2021) `dm4bem
+        <https://github.com/cghiaus/dm4bem>`_, ``sol_rad_tilt_surf()``.
+    """
+    # Step 1: GHI (cloud-corrected global horizontal irradiance)
+    ghi = solar_irradiance_wm2(timestamp, latitude_deg, cloud_cover)
+    if ghi <= 0.0:
+        return 0.0
+
+    # Step 2: Solar geometry
+    doy = timestamp.timetuple().tm_yday
+    d = math.radians(23.45 * math.sin(math.radians(360.0 * (doy - 81) / 365.0)))
+    L = math.radians(latitude_deg)
+    solar_hour = timestamp.hour + timestamp.minute / 60.0
+    h = math.radians(15.0 * (solar_hour - 12.0))  # hour angle; positive = afternoon
+
+    B = math.radians(surface_tilt_deg)
+    Z = math.radians(surface_azimuth_deg)  # 0=south, +90=west, -90=east
+
+    # Solar elevation (needed to project DNI onto horizontal)
+    sin_elev = math.sin(L) * math.sin(d) + math.cos(L) * math.cos(d) * math.cos(h)
+    if sin_elev <= 1e-6:
+        return 0.0  # sun below horizon
+
+    # Step 3: Incidence angle on tilted surface — Duffie-Beckman eq. 1.6.2
+    cos_theta = (
+        math.sin(d) * math.sin(L) * math.cos(B)
+        - math.sin(d) * math.cos(L) * math.sin(B) * math.cos(Z)
+        + math.cos(d) * math.cos(L) * math.cos(B) * math.cos(h)
+        + math.cos(d) * math.sin(L) * math.sin(B) * math.cos(Z) * math.cos(h)
+        + math.cos(d) * math.sin(B) * math.sin(Z) * math.sin(h)
+    )
+    cos_theta = max(0.0, cos_theta)  # clamp: surface in shadow if < 0
+
+    # Step 4: Beam/diffuse split (cloud-cover-based diffuse fraction)
+    # Clear day (cf=0): 15 % diffuse.  Overcast (cf=1): 100 % diffuse.
+    cf = max(0.0, min(1.0, float(cloud_cover)))
+    diffuse_frac = 0.15 + 0.85 * cf
+    dhi = ghi * diffuse_frac                    # diffuse horizontal irradiance
+    dni = (ghi * (1.0 - diffuse_frac)) / sin_elev  # direct normal irradiance
+
+    # Step 5: Three components on tilted surface (Th-CE 2005 §11.2.1 / Duffie)
+    i_direct = dni * cos_theta                         # beam component
+    i_diffuse = dhi * (1.0 + math.cos(B)) / 2.0       # isotropic sky diffuse
+    i_reflected = ghi * albedo * (1.0 - math.cos(B)) / 2.0  # ground-reflected
+
+    return max(0.0, i_direct + i_diffuse + i_reflected)
+
+
+
 
 class RoomThermalModel:
     """
@@ -280,12 +382,17 @@ class PhysicsRoomThermalModel:
         solar_aperture_m2: float = 0.0,
         occupant_gain_w: float = 80.0,
         furnace_power_w: float = 0.0,
+        infiltration_ua_w_k: float = 0.0,
+        solar_tilt_deg: float = 90.0,
+        solar_azimuth_deg: float = 0.0,
     ):
         """
         Args:
             room_name:                Identifier used for logging.
             thermal_capacitance_kj_k: Effective thermal mass C [kJ/K].
-            conductance_ua_w_k:       Envelope conductance UA [W/K].
+            conductance_ua_w_k:       Opaque envelope conductance UA [W/K].
+                                      Represents conduction + surface convection
+                                      through walls, ceiling, floor.
             hvac_power_w:             Rated electric space-heater output [W].
                                       (Accepted as ``hvac_power_w`` for
                                       backward compatibility; stored as
@@ -293,9 +400,19 @@ class PhysicsRoomThermalModel:
             solar_aperture_m2:        Effective glazing area [m²].
             occupant_gain_w:          Metabolic heat per occupant [W].
             furnace_power_w:          Per-room share of zone furnace output [W].
-                                      Derived from zone BTU/hr × AFUE ÷ room
-                                      count via :meth:`from_room_config`.
-                                      Defaults to 0 for electric-only rooms.
+            infiltration_ua_w_k:      Infiltration thermal conductance [W/K].
+                                      ``G_inf = ṁ_air × c_p_air`` where
+                                      ``ṁ_air = ACH × V × ρ_air / 3600``.
+                                      Adds to ``conductance_ua_w_k`` in the
+                                      heat-loss term.  See ``effective_ua_w_k``.
+            solar_tilt_deg:           Tilt of the solar aperture (window) from
+                                      horizontal [°].  0=skylight, 90=vertical
+                                      wall/window.  Used by
+                                      :class:`HouseSimulator` to compute the
+                                      correct irradiance for this room.
+            solar_azimuth_deg:        Azimuth of the solar aperture [°] using
+                                      the Duffie convention: 0=south, +90=west,
+                                      −90=east, 180=north.
         """
         if thermal_capacitance_kj_k <= 0:
             raise ValueError("thermal_capacitance_kj_k must be positive")
@@ -305,6 +422,8 @@ class PhysicsRoomThermalModel:
             raise ValueError("hvac_power_w must be non-negative")
         if furnace_power_w < 0:
             raise ValueError("furnace_power_w must be non-negative")
+        if infiltration_ua_w_k < 0:
+            raise ValueError("infiltration_ua_w_k must be non-negative")
 
         self.room_name = room_name
         self.thermal_capacitance_kj_k = thermal_capacitance_kj_k
@@ -313,12 +432,30 @@ class PhysicsRoomThermalModel:
         self.furnace_power_w = furnace_power_w  # per-room furnace contribution
         self.solar_aperture_m2 = solar_aperture_m2
         self.occupant_gain_w = occupant_gain_w
+        self.infiltration_ua_w_k = infiltration_ua_w_k
+        self.solar_tilt_deg = solar_tilt_deg
+        self.solar_azimuth_deg = solar_azimuth_deg
         self.logger = logging.getLogger("IntelliWarm.PhysicsThermalModel")
 
     @property
     def hvac_power_w(self) -> float:
         """Backward-compatible alias — returns the electric space-heater power [W]."""
         return self.electric_power_w
+
+    @property
+    def effective_ua_w_k(self) -> float:
+        """
+        Total envelope conductance including air infiltration [W/K].
+
+        This is the UA value used in the heat-balance equation::
+
+            Q_loss = effective_ua_w_k × (T_room − T_outdoor)
+
+        Separating the opaque-envelope and infiltration contributions allows
+        independent calibration from blower-door tests (infiltration) and
+        U-value audits (envelope).
+        """
+        return self.conductance_ua_w_k + self.infiltration_ua_w_k
 
     # ------------------------------------------------------------------
     # Factory
@@ -330,6 +467,9 @@ class PhysicsRoomThermalModel:
         room_config: object,
         zone_config: Optional[object] = None,
         num_zone_rooms: int = 1,
+        infiltration_ach: float = 0.5,
+        solar_tilt_deg: float = 90.0,
+        solar_azimuth_deg: float = 0.0,
     ) -> "PhysicsRoomThermalModel":
         """
         Derive physics parameters from a :class:`~intelliwarm.data.RoomConfig`
@@ -338,35 +478,38 @@ class PhysicsRoomThermalModel:
 
         Derivation
         ----------
-        1. **Room volume** — estimated as ``heater_capacity / 45 W·m⁻³``
-           (45 W/m³ is a typical residential design heat load at −10 °C
-           outside and 21 °C inside).
+        1. **Room volume** — ``heater_capacity / 45 W·m⁻³``
+           (45 W/m³ is a typical residential design heat-load at −10 °C
+           outside, 21 °C inside).
         2. **C** — ``volume × ρ_air × c_p_air × 10``
-           (the ×10 multiplier accounts for wall, floor, ceiling, and
-           furnishing thermal mass, consistent with ASHRAE 90.1 precepts).
-        3. **UA** — ``volume^(2/3) × 1.5 W/(K·m^(2/3))``
-           (heuristic calibrated against modern residential envelopes with
-           RSI-3.5 walls and double-pane glazing).
-        4. **electric_power_w** — ``heater_capacity`` (rated electric output).
-        5. **furnace_power_w** — derived from ``zone_config`` when the room's
-           primary heat source is ``GAS_FURNACE``::
+           (×10 multiplier for walls, floor, ceiling, and furnishings;
+           consistent with ASHRAE 90.1).
+        3. **UA (envelope)** — ``volume^(2/3) × 1.5 W/(K·m^(2/3))``
+           (calibrated against RSI-3.5 walls and double-pane glazing with
+           indoor h_i = 7.7 W/(m²·K), outdoor h_o = 25 W/(m²·K) per
+           Dal Zotto et al. 2014 / dm4bem Annex 1).
+        4. **Infiltration UA** — ``ṁ_air × c_p_air``
+           where ``ṁ_air = ACH × V × ρ_air / 3600 [kg/s]``
+           (ASHRAE 62.2 residential default: ACH = 0.5 h⁻¹;
+           typical range 0.3–1.5 h⁻¹).
+        5. **electric_power_w** — ``heater_capacity`` (rated output).
+        6. **furnace_power_w** — from ``zone_config`` when the zone has a
+           furnace::
 
-               furnace_btu_hr × 0.29307 W/(BTU/hr) × furnace_efficiency
-               ─────────────────────────────────────────────────────────
-                                     num_zone_rooms
+               BTU/hr × 0.29307 W/(BTU/hr) × AFUE / num_zone_rooms
 
-           Defaults to 0 for electric-only rooms or when no zone config is
-           provided.
-        6. **Solar aperture** — ``max(0.3, volume^(2/3) × 0.08)`` m²
-           (≈ 8 % of floor-area-equivalent glazing, south-facing).
+        7. **Solar aperture** — ``max(0.3, volume^(2/3) × 0.08)`` m².
+        8. **solar_tilt_deg / solar_azimuth_deg** — passed through unchanged;
+           default is a vertical south-facing window (90°, 0°).
 
         Args:
-            room_config:    A :class:`~intelliwarm.data.RoomConfig` instance.
-            zone_config:    Optional :class:`~intelliwarm.data.ZoneConfig` for
-                            the room's zone.  Required to populate
-                            ``furnace_power_w``.
-            num_zone_rooms: Number of rooms sharing the zone furnace.  Used to
-                            split furnace output equally across rooms.
+            room_config:         A :class:`~intelliwarm.data.RoomConfig`.
+            zone_config:         Optional :class:`~intelliwarm.data.ZoneConfig`.
+            num_zone_rooms:      Rooms sharing the zone furnace.
+            infiltration_ach:    Air changes per hour [h⁻¹] for infiltration
+                                 conductance calculation.
+            solar_tilt_deg:      Window tilt [°].  0=horizontal, 90=vertical.
+            solar_azimuth_deg:   Window azimuth [°].  0=south, +90=west.
         """
         heater_capacity = float(getattr(room_config, "heater_capacity", 1500.0))
         room_id = str(getattr(room_config, "room_id", "room"))
@@ -376,12 +519,15 @@ class PhysicsRoomThermalModel:
         ua_w_k = (volume_m3 ** (2.0 / 3.0)) * 1.5
         solar_ap_m2 = max(0.3, (volume_m3 ** (2.0 / 3.0)) * 0.08)
 
-        # Derive per-room furnace output when zone furnace data is available.
+        # Infiltration conductance (dm4bem Annex 1 / ASHRAE 62.2)
+        m_dot_kg_s = volume_m3 * 1.2 * infiltration_ach / 3_600.0  # kg/s
+        infiltration_ua = m_dot_kg_s * 1_005.0  # W/K  (c_p_air ≈ 1005 J/(kg·K))
+
+        # Per-room furnace output
         furnace_power_w = 0.0
         if zone_config is not None and getattr(zone_config, "has_furnace", False):
             btu_per_hour = float(getattr(zone_config, "furnace_btu_per_hour", 60_000.0))
             efficiency = float(getattr(zone_config, "furnace_efficiency", 0.80))
-            # Convert BTU/hr → W, apply AFUE, split across zone rooms
             furnace_total_w = btu_per_hour * 0.29307 * efficiency
             furnace_power_w = furnace_total_w / max(1, num_zone_rooms)
 
@@ -393,6 +539,9 @@ class PhysicsRoomThermalModel:
             solar_aperture_m2=solar_ap_m2,
             occupant_gain_w=80.0,
             furnace_power_w=furnace_power_w,
+            infiltration_ua_w_k=infiltration_ua,
+            solar_tilt_deg=solar_tilt_deg,
+            solar_azimuth_deg=solar_azimuth_deg,
         )
 
     # ------------------------------------------------------------------
@@ -418,7 +567,11 @@ class PhysicsRoomThermalModel:
             outside_temp:           Outdoor dry-bulb temperature [°C].
             heating_power:          Normalised **electric** heater fraction [0–1].
             dt_minutes:             Timestep duration [min].
-            solar_irradiance_w_m2:  Global horizontal irradiance [W/m²].
+            solar_irradiance_w_m2:  Irradiance on the solar aperture surface
+                                      [W/m²].  When called from
+                                      :class:`HouseSimulator`, this value has
+                                      already been corrected for surface tilt
+                                      and azimuth via :func:`sol_rad_tilt_wm2`.
             occupancy:              Occupancy fraction [0–1].
             furnace_heating_power:  Normalised **gas furnace** fraction [0–1].
                                     The hybrid controller guarantees this and
@@ -439,7 +592,7 @@ class PhysicsRoomThermalModel:
 
         T = current_temp
         for _ in range(self.N_SUBSTEPS):
-            Q_loss = self.conductance_ua_w_k * (T - outside_temp)
+            Q_loss = self.effective_ua_w_k * (T - outside_temp)
             dT = (Q_electric + Q_furnace + Q_solar + Q_occ - Q_loss) / C_j_k * dt_sub
             T += dT
 
@@ -476,23 +629,28 @@ class PhysicsRoomThermalModel:
 
     @property
     def time_constant_hours(self) -> float:
-        """RC time constant τ = C / UA [hours]."""
-        if self.conductance_ua_w_k == 0:
+        """RC time constant τ = C / UA_eff [hours], including infiltration."""
+        if self.effective_ua_w_k == 0:
             return float("inf")
-        return (self.thermal_capacitance_kj_k * 1_000.0) / (self.conductance_ua_w_k * 3_600.0)
+        return (self.thermal_capacitance_kj_k * 1_000.0) / (self.effective_ua_w_k * 3_600.0)
 
     @property
     def steady_state_delta_t(self) -> Optional[float]:
         """
         Maximum temperature rise above outdoor when **both** heat sources run
-        at full output simultaneously [°C].  Returns ``None`` if UA is zero.
+        at full output simultaneously [°C].  Returns ``None`` if effective UA
+        is zero.
+
+        Uses :attr:`effective_ua_w_k` (envelope + infiltration), so a room
+        with more infiltration has a smaller maximum ΔT for the same heater
+        capacity.
 
         In practice the hybrid controller activates only one source at a time;
         the individual contributions are::
 
-            ΔT_electric = electric_power_w / conductance_ua_w_k
-            ΔT_furnace  = furnace_power_w  / conductance_ua_w_k
+            ΔT_electric = electric_power_w / effective_ua_w_k
+            ΔT_furnace  = furnace_power_w  / effective_ua_w_k
         """
-        if self.conductance_ua_w_k == 0:
+        if self.effective_ua_w_k == 0:
             return None
-        return (self.electric_power_w + self.furnace_power_w) / self.conductance_ua_w_k
+        return (self.electric_power_w + self.furnace_power_w) / self.effective_ua_w_k

@@ -709,3 +709,338 @@ class TestHouseSimulatorHeatSourceRouting:
         state = self._state({})  # empty heat_sources
         next_state = sim.step(state, {"office": HeatingAction.COMFORT})
         assert next_state.room_temperatures["office"] > 15.0
+
+
+# ---------------------------------------------------------------------------
+# sol_rad_tilt_wm2 — Duffie-Beckman tilted surface model
+# ---------------------------------------------------------------------------
+
+from intelliwarm.models import sol_rad_tilt_wm2
+
+
+class TestSolRadTiltWm2:
+    """Tilted surface irradiance follows Duffie-Beckman incidence angle physics."""
+
+    # --- basic sanity ---
+
+    def test_zero_at_night(self):
+        midnight = datetime(2026, 1, 15, 0, 0)
+        assert sol_rad_tilt_wm2(midnight, latitude_deg=40.0) == pytest.approx(0.0, abs=1.0)
+
+    def test_positive_at_noon_summer(self):
+        noon = datetime(2026, 6, 21, 12, 0)
+        gti = sol_rad_tilt_wm2(noon, latitude_deg=40.0, surface_tilt_deg=90.0,
+                                surface_azimuth_deg=0.0)
+        assert gti > 100.0, "South-facing vertical window should receive solar at summer noon"
+
+    def test_horizontal_surface_equals_ghi(self):
+        """For a horizontal surface (tilt=0), GTI should equal GHI (albedo=0 eliminates reflected)."""
+        noon = datetime(2026, 6, 21, 12, 0)
+        ghi = solar_irradiance_wm2(noon, latitude_deg=40.0, cloud_cover=0.0)
+        # Horizontal surface with zero albedo: no reflected component, isotropic diffuse=(1+1)/2=1
+        # Direct = DNI*sin_elev, Diffuse = DHI*1, Total = GHI
+        gti_horizontal = sol_rad_tilt_wm2(
+            noon, latitude_deg=40.0, surface_tilt_deg=0.0,
+            surface_azimuth_deg=0.0, cloud_cover=0.0, albedo=0.0
+        )
+        assert gti_horizontal == pytest.approx(ghi, rel=0.01), (
+            "Horizontal surface irradiance should equal GHI (within 1 %)"
+        )
+
+    def test_returns_non_negative(self):
+        """GTI must never be negative."""
+        for month in [1, 6]:
+            for hour in [0, 6, 12, 18]:
+                ts = datetime(2026, month, 15, hour, 0)
+                gti = sol_rad_tilt_wm2(ts, latitude_deg=40.0, surface_tilt_deg=90.0)
+                assert gti >= 0.0
+
+    # --- directional physics ---
+
+    def test_south_facing_better_than_north_in_winter_noon(self):
+        """At winter noon (sun in south), south-facing wall should get more than north-facing."""
+        noon = datetime(2026, 1, 15, 12, 0)
+        south = sol_rad_tilt_wm2(noon, latitude_deg=40.0, surface_tilt_deg=90.0,
+                                  surface_azimuth_deg=0.0)
+        north = sol_rad_tilt_wm2(noon, latitude_deg=40.0, surface_tilt_deg=90.0,
+                                  surface_azimuth_deg=180.0)
+        assert south > north, "South wall should receive more direct solar than north in winter"
+
+    def test_east_facing_peaks_morning(self):
+        """East-facing wall (azimuth=−90°) should receive more solar at 9:00 than 15:00."""
+        ts_am = datetime(2026, 6, 21, 9, 0)
+        ts_pm = datetime(2026, 6, 21, 15, 0)
+        am = sol_rad_tilt_wm2(ts_am, latitude_deg=40.0, surface_tilt_deg=90.0,
+                               surface_azimuth_deg=-90.0)
+        pm = sol_rad_tilt_wm2(ts_pm, latitude_deg=40.0, surface_tilt_deg=90.0,
+                               surface_azimuth_deg=-90.0)
+        assert am > pm, "East-facing wall should get more solar in AM than PM"
+
+    def test_west_facing_peaks_afternoon(self):
+        """West-facing wall (azimuth=+90°) should receive more solar at 15:00 than 9:00."""
+        ts_am = datetime(2026, 6, 21, 9, 0)
+        ts_pm = datetime(2026, 6, 21, 15, 0)
+        am = sol_rad_tilt_wm2(ts_am, latitude_deg=40.0, surface_tilt_deg=90.0,
+                               surface_azimuth_deg=90.0)
+        pm = sol_rad_tilt_wm2(ts_pm, latitude_deg=40.0, surface_tilt_deg=90.0,
+                               surface_azimuth_deg=90.0)
+        assert pm > am, "West-facing wall should get more solar in PM than AM"
+
+    def test_vertical_south_winter_better_than_summer(self):
+        """At 40°N south-facing vertical, winter direct beam > summer (sun lower = smaller incidence angle)."""
+        winter_noon = datetime(2026, 1, 15, 12, 0)
+        summer_noon = datetime(2026, 6, 21, 12, 0)
+        winter = sol_rad_tilt_wm2(winter_noon, latitude_deg=40.0,
+                                   surface_tilt_deg=90.0, surface_azimuth_deg=0.0)
+        summer = sol_rad_tilt_wm2(summer_noon, latitude_deg=40.0,
+                                   surface_tilt_deg=90.0, surface_azimuth_deg=0.0)
+        # Winter has lower sun → smaller incidence angle on south-facing vertical → more direct
+        assert winter > summer, (
+            "South-facing vertical window should receive more direct beam in winter than summer "
+            "(lower solar altitude in winter means sun hits more perpendicularly)"
+        )
+
+    # --- cloud cover ---
+
+    def test_overcast_reduces_irradiance(self):
+        noon = datetime(2026, 6, 21, 12, 0)
+        clear = sol_rad_tilt_wm2(noon, latitude_deg=40.0, cloud_cover=0.0)
+        overcast = sol_rad_tilt_wm2(noon, latitude_deg=40.0, cloud_cover=1.0)
+        assert clear > overcast
+
+    # --- albedo contribution ---
+
+    def test_high_albedo_increases_reflected_on_tilted_surface(self):
+        """Higher albedo should increase irradiance on a tilted surface (reflected term)."""
+        noon = datetime(2026, 6, 21, 12, 0)
+        low_albedo = sol_rad_tilt_wm2(noon, latitude_deg=40.0, surface_tilt_deg=60.0,
+                                       surface_azimuth_deg=0.0, albedo=0.05)
+        high_albedo = sol_rad_tilt_wm2(noon, latitude_deg=40.0, surface_tilt_deg=60.0,
+                                        surface_azimuth_deg=0.0, albedo=0.60)
+        assert high_albedo > low_albedo
+
+    def test_horizontal_surface_has_no_reflected_contribution(self):
+        """For horizontal surface, ground-reflected term = 0 (no visible ground from overhead)."""
+        noon = datetime(2026, 6, 21, 12, 0)
+        low = sol_rad_tilt_wm2(noon, latitude_deg=40.0, surface_tilt_deg=0.0, albedo=0.05)
+        high = sol_rad_tilt_wm2(noon, latitude_deg=40.0, surface_tilt_deg=0.0, albedo=0.90)
+        assert low == pytest.approx(high, rel=0.01), (
+            "Horizontal surface has no reflected component regardless of albedo"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Infiltration — PhysicsRoomThermalModel
+# ---------------------------------------------------------------------------
+
+
+class TestInfiltration:
+    """Infiltration conductance adds to total UA and accelerates heat exchange."""
+
+    def _model(self, infiltration_ua: float = 0.0) -> PhysicsRoomThermalModel:
+        return PhysicsRoomThermalModel(
+            room_name="test",
+            thermal_capacitance_kj_k=200.0,
+            conductance_ua_w_k=10.0,
+            hvac_power_w=0.0,
+            infiltration_ua_w_k=infiltration_ua,
+        )
+
+    def test_effective_ua_is_sum_of_envelope_and_infiltration(self):
+        model = self._model(infiltration_ua=5.0)
+        assert model.effective_ua_w_k == pytest.approx(15.0)
+
+    def test_zero_infiltration_effective_ua_equals_conductance(self):
+        model = self._model(infiltration_ua=0.0)
+        assert model.effective_ua_w_k == pytest.approx(10.0)
+
+    def test_infiltration_increases_cooling_rate(self):
+        """Room with infiltration should cool faster than without (same envelope UA)."""
+        model_none = self._model(infiltration_ua=0.0)
+        model_inf = self._model(infiltration_ua=20.0)  # heavy infiltration
+        T_start, T_out = 25.0, 5.0
+        T_none = model_none.step(T_start, T_out, heating_power=0.0)
+        T_inf = model_inf.step(T_start, T_out, heating_power=0.0)
+        assert T_inf < T_none, "More infiltration should cause faster cooling"
+
+    def test_infiltration_steady_state_uses_effective_ua(self):
+        """Steady-state ΔT should reflect total UA including infiltration."""
+        hvac_w, envelope_ua, infiltration_ua = 1000.0, 10.0, 5.0
+        model = PhysicsRoomThermalModel(
+            room_name="r",
+            thermal_capacitance_kj_k=400.0,
+            conductance_ua_w_k=envelope_ua,
+            hvac_power_w=hvac_w,
+            infiltration_ua_w_k=infiltration_ua,
+        )
+        T_out = 0.0
+        T = T_out
+        for _ in range(500):
+            T = model.step(T, T_out, heating_power=1.0)
+        expected_delta = hvac_w / (envelope_ua + infiltration_ua)  # 1000/15 ≈ 66.7
+        assert abs(T - T_out - expected_delta) < 1.0, (
+            f"Steady-state ΔT={T - T_out:.1f}°C, expected ≈ {expected_delta:.1f}°C"
+        )
+
+    def test_steady_state_delta_t_property_uses_effective_ua(self):
+        hvac_w, envelope_ua, inf_ua = 1000.0, 10.0, 5.0
+        model = PhysicsRoomThermalModel(
+            room_name="r",
+            thermal_capacitance_kj_k=200.0,
+            conductance_ua_w_k=envelope_ua,
+            hvac_power_w=hvac_w,
+            infiltration_ua_w_k=inf_ua,
+        )
+        assert model.steady_state_delta_t == pytest.approx(hvac_w / (envelope_ua + inf_ua))
+
+    def test_time_constant_uses_effective_ua(self):
+        """τ = C / UA_eff — should be smaller when infiltration is higher."""
+        model_no_inf = self._model(infiltration_ua=0.0)
+        model_with_inf = self._model(infiltration_ua=10.0)
+        assert model_with_inf.time_constant_hours < model_no_inf.time_constant_hours
+
+    def test_negative_infiltration_raises(self):
+        with pytest.raises(ValueError, match="infiltration"):
+            PhysicsRoomThermalModel(
+                room_name="r",
+                thermal_capacitance_kj_k=200.0,
+                conductance_ua_w_k=10.0,
+                hvac_power_w=0.0,
+                infiltration_ua_w_k=-1.0,
+            )
+
+    def test_from_room_config_produces_positive_infiltration_ua(self):
+        """from_room_config(infiltration_ach=0.5) should produce infiltration_ua_w_k > 0."""
+        rc = RoomConfig.from_legacy_config(
+            "bedroom1",
+            {"zone": "Residential", "target_temp": 21,
+             "heater_power": 1500, "thermal_mass": 0.07,
+             "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel.from_room_config(rc, infiltration_ach=0.5)
+        assert model.infiltration_ua_w_k > 0.0
+
+    def test_from_room_config_zero_infiltration_when_ach_zero(self):
+        rc = RoomConfig.from_legacy_config(
+            "bedroom1",
+            {"zone": "Residential", "target_temp": 21,
+             "heater_power": 1500, "thermal_mass": 0.07,
+             "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel.from_room_config(rc, infiltration_ach=0.0)
+        assert model.infiltration_ua_w_k == pytest.approx(0.0, abs=1e-6)
+
+    def test_from_room_config_surface_orientation_stored(self):
+        """Solar tilt/azimuth passed to from_room_config should be stored on the model."""
+        rc = RoomConfig.from_legacy_config(
+            "bedroom1",
+            {"zone": "Residential", "target_temp": 21,
+             "heater_power": 1500, "thermal_mass": 0.07,
+             "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel.from_room_config(
+            rc, solar_tilt_deg=45.0, solar_azimuth_deg=-90.0
+        )
+        assert model.solar_tilt_deg == pytest.approx(45.0)
+        assert model.solar_azimuth_deg == pytest.approx(-90.0)
+
+
+# ---------------------------------------------------------------------------
+# HouseSimulator — per-room tilted solar
+# ---------------------------------------------------------------------------
+
+
+class TestSimulatorTiltedSolar:
+    """Simulator routes tilted irradiance per room using each model's orientation."""
+
+    def _state(self, timestamp: datetime) -> SimulationState:
+        return SimulationState(
+            timestamp=timestamp,
+            outdoor_temp=5.0,
+            room_temperatures={"south": 15.0, "north": 15.0},
+            heating_actions={"south": HeatingAction.OFF, "north": HeatingAction.OFF},
+            occupancy={"south": 0.0, "north": 0.0},
+        )
+
+    def _sim_with_orientations(self) -> HouseSimulator:
+        rc = RoomConfig.from_legacy_config(
+            "south",
+            {"zone": "R", "target_temp": 21, "heater_power": 0,
+             "thermal_mass": 0.07, "heating_efficiency": 0.85},
+        )
+        south_model = PhysicsRoomThermalModel(
+            room_name="south",
+            thermal_capacitance_kj_k=200.0,
+            conductance_ua_w_k=5.0,
+            hvac_power_w=0.0,
+            solar_aperture_m2=2.0,
+            solar_tilt_deg=90.0,
+            solar_azimuth_deg=0.0,   # south-facing
+        )
+        north_model = PhysicsRoomThermalModel(
+            room_name="north",
+            thermal_capacitance_kj_k=200.0,
+            conductance_ua_w_k=5.0,
+            hvac_power_w=0.0,
+            solar_aperture_m2=2.0,
+            solar_tilt_deg=90.0,
+            solar_azimuth_deg=180.0,  # north-facing
+        )
+        return HouseSimulator(
+            room_configs={"south": rc, "north": rc},
+            thermal_models={"south": south_model, "north": north_model},
+            latitude_deg=40.0,
+        )
+
+    def test_south_room_warmer_than_north_at_winter_noon(self):
+        """South-facing window gains more solar at winter noon than north-facing."""
+        sim = self._sim_with_orientations()
+        ts = datetime(2026, 1, 15, 12, 0)  # winter noon
+        next_state = sim.step(self._state(ts), {"south": HeatingAction.OFF,
+                                                "north": HeatingAction.OFF})
+        assert next_state.room_temperatures["south"] >= next_state.room_temperatures["north"], (
+            "South-facing room should be warmer (or equal) than north-facing at winter noon"
+        )
+
+    def test_simulator_albedo_parameter_accepted(self):
+        """HouseSimulator should accept and store albedo parameter."""
+        rc = RoomConfig.from_legacy_config(
+            "r", {"zone": "X", "target_temp": 21, "heater_power": 0,
+                  "thermal_mass": 0.07, "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel(
+            room_name="r",
+            thermal_capacitance_kj_k=200.0,
+            conductance_ua_w_k=5.0,
+            hvac_power_w=0.0,
+        )
+        sim = HouseSimulator(
+            room_configs={"r": rc},
+            thermal_models={"r": model},
+            albedo=0.60,
+        )
+        assert sim.albedo == pytest.approx(0.60)
+
+    def test_legacy_model_falls_back_to_ghi(self):
+        """A model without solar_tilt_deg/solar_azimuth_deg uses GHI fallback."""
+        from intelliwarm.models.thermal_model import RoomThermalModel
+        rc = RoomConfig.from_legacy_config(
+            "r", {"zone": "X", "target_temp": 21, "heater_power": 0,
+                  "thermal_mass": 0.07, "heating_efficiency": 0.85},
+        )
+        legacy_model = RoomThermalModel(room_name="r")
+        sim = HouseSimulator(
+            room_configs={"r": rc},
+            thermal_models={"r": legacy_model},
+        )
+        ts = datetime(2026, 6, 21, 12, 0)
+        state = SimulationState(
+            timestamp=ts, outdoor_temp=15.0,
+            room_temperatures={"r": 15.0},
+            heating_actions={"r": HeatingAction.OFF},
+            occupancy={"r": 0.0},
+        )
+        # Should not raise; GHI fallback works fine for legacy model
+        next_state = sim.step(state, {"r": HeatingAction.OFF})
+        assert "r" in next_state.room_temperatures
+

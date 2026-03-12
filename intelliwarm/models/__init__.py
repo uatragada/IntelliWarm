@@ -2,7 +2,7 @@
 Models Module Exports
 """
 
-from .thermal_model import RoomThermalModel, PhysicsRoomThermalModel, solar_irradiance_wm2
+from .thermal_model import RoomThermalModel, PhysicsRoomThermalModel, solar_irradiance_wm2, sol_rad_tilt_wm2
 from .simulator import HouseSimulator
 
-__all__ = ["RoomThermalModel", "PhysicsRoomThermalModel", "solar_irradiance_wm2", "HouseSimulator"]
+__all__ = ["RoomThermalModel", "PhysicsRoomThermalModel", "solar_irradiance_wm2", "sol_rad_tilt_wm2", "HouseSimulator"]

@@ -150,6 +150,29 @@
 - `HouseSimulator.step()` reads `state.heat_sources` per room: `GAS_FURNACE` routes the action to `furnace_heating_power`, `ELECTRIC`/default routes to `heating_power`, ensuring the hybrid controller's source choice is faithfully simulated
 - 20 new tests added to `tests/test_thermal_physics_model.py` covering all dual-source paths, `from_room_config` with/without `ZoneConfig`, and simulator routing; 95 tests pass
 
+### dm4bem-Inspired Physics Improvements
+
+Improvements derived from **Duffie-Beckman** (*Solar Engineering of Thermal Processes*, 5th ed.) and the **dm4bem** reference implementation (Ghiaus, 2021):
+
+- `sol_rad_tilt_wm2()` added to `thermal_model.py`:
+  - Computes irradiance on an arbitrarily tilted and oriented surface [W/m²]
+  - Decomposes incident radiation into three Duffie-Beckman components: direct beam (`DNI × cos θ`), isotropic sky diffuse (`DHI × (1 + cos β) / 2`), and ground-reflected (`GHI × ρ × (1 − cos β) / 2`)
+  - Incidence angle uses Duffie-Beckman eq. 1.6.2; surface azimuth convention: 0=south, +90=west, −90=east
+  - Beam/diffuse split from a cloud-cover-based diffuse fraction (15 % on clear days, 100 % overcast) consistent with Erbs correlation extremes
+  - `albedo` parameter supports snow (0.6) vs. grass/asphalt (0.2) ground reflectance
+- `PhysicsRoomThermalModel` gains three new parameters:
+  - `infiltration_ua_w_k` — infiltration thermal conductance `G_inf = ṁ_air × c_p_air` [W/K]; adds to the envelope UA in the heat-loss term
+  - `solar_tilt_deg` — window aperture tilt from horizontal [°]; default 90° (vertical)
+  - `solar_azimuth_deg` — window azimuth [°]; default 0° (south-facing)
+- `effective_ua_w_k` property introduced: `conductance_ua_w_k + infiltration_ua_w_k`; used by `step()`, `time_constant_hours`, and `steady_state_delta_t`
+- `from_room_config()` extended:
+  - `infiltration_ach` param (default 0.5 h⁻¹, ASHRAE 62.2 residential); converts to `infiltration_ua_w_k = volume × ρ_air × c_p_air × ACH / 3600`
+  - `solar_tilt_deg` / `solar_azimuth_deg` passed through to the model
+- `HouseSimulator` gains `albedo` constructor parameter (default 0.20)
+- `HouseSimulator.step()` now computes **per-room** irradiance: rooms with `solar_tilt_deg`/`solar_azimuth_deg` attributes get tilted-surface irradiance via `sol_rad_tilt_wm2()`; legacy models without those attributes fall back to site-level GHI via `solar_irradiance_wm2()`
+- `sol_rad_tilt_wm2` exported from `intelliwarm/models/__init__.py`
+- 35 new tests added covering: tilted surface night/noon/horizontal identity, directional physics (south/north/east/west), seasonal variation for vertical south wall, cloud cover, albedo contribution, infiltration steady-state and cooling rate, `effective_ua_w_k` property, `from_room_config` with infiltration, simulator per-room orientation routing, and legacy model GHI fallback; 119 tests pass
+
 ---
 
 ## Active Next Priority Order
