@@ -37,7 +37,8 @@ rooms:
     thermal_mass: 0.005  # cooling coefficient
     heating_efficiency: 0.85
     occupancy_schedule: "9-18"
-    
+    heat_source: "gas_furnace"  # heated by zone furnace
+
   living_room:
     zone: "Residential"
     room_size: 300
@@ -46,6 +47,7 @@ rooms:
     thermal_mass: 0.003
     heating_efficiency: 0.85
     occupancy_schedule: "18-23"
+    heat_source: "gas_furnace"  # heated by zone furnace
 
   office:
     zone: "Work"
@@ -55,16 +57,21 @@ rooms:
     thermal_mass: 0.008
     heating_efficiency: 0.85
     occupancy_schedule: "8-17"
+    heat_source: "electric"  # individual electric space heater
 
 # Zones Configuration
 zones:
   Residential:
     description: "Living and sleeping areas"
     priority: 1
-    
+    has_furnace: true
+    furnace_btu_per_hour: 60000  # 60k BTU/hr — typical residential central furnace
+    furnace_efficiency: 0.80     # 80% AFUE
+
   Work:
     description: "Office and study spaces"
     priority: 2
+    has_furnace: false           # electric space heaters only in work zone
 
 # Database Configuration
 database:

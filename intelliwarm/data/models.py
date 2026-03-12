@@ -10,6 +10,21 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+class HeatSourceType(Enum):
+    """Physical heat source installed in a room or zone."""
+
+    ELECTRIC = "electric"    # room-level electric space heater
+    GAS_FURNACE = "gas_furnace"  # zone-level gas furnace
+
+    @classmethod
+    def from_str(cls, value: str) -> "HeatSourceType":
+        normalized = str(value).strip().lower().replace(" ", "_")
+        for member in cls:
+            if member.value == normalized:
+                return member
+        return cls.ELECTRIC
+
+
 class HeatingAction(Enum):
     """Discrete heating actions used by controllers and simulation."""
 
@@ -69,6 +84,7 @@ class RoomConfig:
     heat_loss_factor: float
     heating_efficiency: float
     occupancy_schedule: List[OccupancyWindow] = field(default_factory=list)
+    heat_source: HeatSourceType = HeatSourceType.ELECTRIC
 
     @classmethod
     def from_legacy_config(
@@ -81,6 +97,8 @@ class RoomConfig:
         target_temp = float(config.get("target_temp", 21.0))
         comfort_delta = float(config.get("comfort_delta", 1.0))
         schedule = cls.parse_schedule(config.get("occupancy_schedule", ""))
+        raw_source = config.get("heat_source", "electric")
+        heat_source = HeatSourceType.from_str(str(raw_source)) if raw_source else HeatSourceType.ELECTRIC
         return cls(
             room_id=room_id,
             display_name=default_name or str(config.get("display_name", room_id)),
@@ -91,6 +109,7 @@ class RoomConfig:
             heat_loss_factor=float(config.get("heat_loss_factor", config.get("thermal_mass", 0.05))),
             heating_efficiency=float(config.get("heating_efficiency", 0.1)),
             occupancy_schedule=schedule,
+            heat_source=heat_source,
         )
 
     @staticmethod
@@ -140,6 +159,7 @@ class SimulationState:
     room_temperatures: Dict[str, float]
     heating_actions: Dict[str, HeatingAction]
     occupancy: Dict[str, float]
+    heat_sources: Dict[str, HeatSourceType] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -218,6 +238,9 @@ class ControlDecision:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the decision for API and runtime responses."""
+        heat_source = self.metadata.get("heat_source", HeatSourceType.ELECTRIC.value)
+        if isinstance(heat_source, HeatSourceType):
+            heat_source = heat_source.value
         return {
             "room": self.room_id,
             "controller": self.source,
@@ -225,6 +248,7 @@ class ControlDecision:
             "next_action": self.action.power_level,
             "next_action_label": self.action.name,
             "total_cost": self.projected_cost,
+            "heat_source": heat_source,
             "target_temp": self.target_temp,
             "current_temp": self.current_temp,
             "occupancy_probability": self.occupancy_probability,
@@ -232,4 +256,66 @@ class ControlDecision:
             "explanation": self.rationale,
             "reasons": list(self.reasons),
             "metadata": dict(self.metadata),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Hybrid heating domain models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ZoneConfig:
+    """Zone-level configuration, including furnace details."""
+
+    zone_id: str
+    description: str = ""
+    priority: int = 0
+    has_furnace: bool = False
+    furnace_btu_per_hour: float = 60_000.0  # typical residential furnace
+    furnace_efficiency: float = 0.80  # AFUE (0-1)
+
+    @property
+    def furnace_therms_per_hour(self) -> float:
+        """Gas consumption rate in therms/hour at rated output."""
+        return self.furnace_btu_per_hour / 100_000.0
+
+    def hourly_gas_cost(self, gas_price_per_therm: float) -> float:
+        """Cost in $/hr to run the furnace at full output."""
+        return (self.furnace_therms_per_hour / self.furnace_efficiency) * gas_price_per_therm
+
+
+@dataclass(frozen=True)
+class HybridHeatingDecision:
+    """
+    Zone-level decision: run the gas furnace for the whole zone, or
+    let each room use its own electric space heater.
+
+    The controller selects the source with the lower projected hourly cost
+    whenever at least one room needs heat.
+    """
+
+    zone: str
+    heat_source: HeatSourceType
+    furnace_on: bool
+    per_room_actions: Dict[str, HeatingAction]
+    rooms_needing_heat: List[str]
+    electric_hourly_cost: float
+    furnace_hourly_cost: float
+    chosen_hourly_cost: float
+    rationale: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "zone": self.zone,
+            "heat_source": self.heat_source.value,
+            "furnace_on": self.furnace_on,
+            "rooms_needing_heat": list(self.rooms_needing_heat),
+            "per_room_actions": {
+                room: action.name for room, action in self.per_room_actions.items()
+            },
+            "electric_hourly_cost": round(self.electric_hourly_cost, 4),
+            "furnace_hourly_cost": round(self.furnace_hourly_cost, 4),
+            "chosen_hourly_cost": round(self.chosen_hourly_cost, 4),
+            "rationale": self.rationale,
         }

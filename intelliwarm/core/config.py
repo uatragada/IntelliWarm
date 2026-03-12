@@ -129,12 +129,16 @@ class RoomSettings:
     display_temp_f: Optional[float] = None
     humidity: float = 45.0
     heating_source: str = "Off"
+    heat_source: str = "electric"  # electric | gas_furnace
 
 
 @dataclass(frozen=True)
 class ZoneSettings:
     description: str = ""
     priority: int = 0
+    has_furnace: bool = False
+    furnace_btu_per_hour: float = 60000.0
+    furnace_efficiency: float = 0.80
 
 
 @dataclass(frozen=True)

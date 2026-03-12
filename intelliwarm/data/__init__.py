@@ -7,9 +7,12 @@ from .models import (
     ForecastBundle,
     ForecastStep,
     HeatingAction,
+    HeatSourceType,
+    HybridHeatingDecision,
     OccupancyWindow,
     RoomConfig,
     SimulationState,
+    ZoneConfig,
 )
 
 __all__ = [
@@ -17,7 +20,10 @@ __all__ = [
     "ForecastBundle",
     "ForecastStep",
     "HeatingAction",
+    "HeatSourceType",
+    "HybridHeatingDecision",
     "OccupancyWindow",
     "RoomConfig",
     "SimulationState",
+    "ZoneConfig",
 ]

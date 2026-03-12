@@ -10,12 +10,14 @@ from .device_controller import (
     SimulatedDeviceBackend,
     SimulatedHeater,
 )
+from .hybrid_controller import HybridController
 
 __all__ = [
     "BaselineController",
     "DeviceController",
     "DeviceInterface",
     "HardwareDeviceBackend",
+    "HybridController",
     "SimulatedDeviceBackend",
     "SimulatedHeater",
 ]
