@@ -68,6 +68,8 @@ def test_create_app_registers_runtime_and_routes(tmp_path):
     )
 
     assert "intelliwarm_bootstrap" in app.extensions
+    assert "dashboard" in app.view_functions
+    assert "demo_timeline" in app.view_functions
 
     with app.test_client() as client:
         response = client.get("/api/rooms")
@@ -95,3 +97,18 @@ def test_optimization_endpoint_accepts_baseline_controller(tmp_path):
     payload = response.get_json()
     assert payload["controller"] == "baseline"
     assert payload["next_action_label"] in {"OFF", "ECO", "COMFORT", "PREHEAT"}
+
+
+def test_demo_timeline_route_stays_registered_after_modularization(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    _write_app_config(config_path)
+
+    app = create_app(
+        config_path=str(config_path),
+        database_path=str(tmp_path / "app.db"),
+    )
+
+    with app.test_client() as client:
+        response = client.get("/demo_timeline")
+
+    assert response.status_code == 200

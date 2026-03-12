@@ -9,6 +9,7 @@ The current repo should be treated as an incremental architecture, not a greenfi
 ### Application Layer
 
 - `app.py`: Flask entrypoint
+- `intelliwarm/routes/`: thin Flask route modules split by dashboard and demo concerns
 - `intelliwarm/services/runtime.py`: runtime orchestration, demo loading, optimization dispatch, and room state management
 - `intelliwarm/services/forecast_bundle.py`: aligned occupancy, weather, and pricing forecasts for controllers
 

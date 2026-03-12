@@ -34,17 +34,19 @@
 - application bootstrap wires adapter boundaries without pushing hardware I/O into routes or optimizers
 - focused tests cover hardware status reporting and offline-safe fallback behavior
 
+### Route Foundation
+
+- Flask routes are now split into thin modules under `intelliwarm/routes/`
+- dashboard/form handlers remain thin and delegate room/config behavior to runtime services
+- demo routes are isolated from dashboard routes while preserving existing endpoints
+
 ## Next Priority Order
 
-### 1. Route Modularization
-
-Refactor `app.py` into thin Flask route modules that delegate to services.
-
-### 2. Typed Config Evolution
+### 1. Typed Config Evolution
 
 Layer typed config validation on top of `configs/config.yaml` without breaking the current runtime.
 
-### 3. Persistence And Reporting
+### 2. Persistence And Reporting
 
 Extend the current SQLite layer with richer repositories and report-generation support.
 
