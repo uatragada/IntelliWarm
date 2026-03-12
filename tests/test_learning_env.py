@@ -8,7 +8,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from intelliwarm.data import RoomConfig
+import pytest
+
+from intelliwarm.data import RoomConfig, ZoneConfig
 from intelliwarm.data import HeatSourceType, HeatingAction
 from intelliwarm.learning import (
     IntelliWarmMultiRoomEnv,
@@ -19,7 +21,8 @@ from intelliwarm.learning import (
     evaluate_named_policies,
     evaluate_policy,
 )
-from intelliwarm.models import RoomThermalModel
+from intelliwarm.models import PhysicsRoomThermalModel, RoomThermalModel, HouseSimulator
+from intelliwarm.learning.gym_env import ScenarioBoundPriceService
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.pricing import EnergyPriceService, StaticPriceProvider
 from scripts.evaluate_policies import main as evaluate_policies_main
@@ -117,7 +120,7 @@ def test_multi_room_env_reset_returns_padded_multi_room_observation():
 
     observation, info = env.reset(options={"scenario_name": "winter-workday"})
 
-    assert observation.shape == (34,)
+    assert observation.shape == (52,)
     assert info["scenario_name"] == "winter-workday"
     assert info["zone_names"] == ["Residential", "Work"]
     assert info["room_names"] == ["bedroom", "living_room", "office"]
@@ -125,6 +128,28 @@ def test_multi_room_env_reset_returns_padded_multi_room_observation():
     assert info["max_zones"] == 3
     assert info["active_rooms"] == 3
     assert info["max_rooms"] == 3
+    assert info["occupancy_forecast_horizon_steps"] == 6
+
+
+def test_multi_room_env_observation_includes_per_room_occupancy_forecast():
+    generator = SyntheticScenarioGenerator()
+    env = IntelliWarmMultiRoomEnv(generator.default_scenarios())
+
+    observation, info = env.reset(options={"scenario_name": "winter-workday"})
+
+    forecast_horizon = info["occupancy_forecast_horizon_steps"]
+    room_feature_block = info["max_rooms"] * 6
+    bedroom_forecast = observation[room_feature_block : room_feature_block + forecast_horizon]
+    living_room_forecast = observation[
+        room_feature_block + forecast_horizon : room_feature_block + 2 * forecast_horizon
+    ]
+    office_forecast = observation[
+        room_feature_block + 2 * forecast_horizon : room_feature_block + 3 * forecast_horizon
+    ]
+
+    assert list(bedroom_forecast) == pytest.approx([0.8, 0.1, 0.1, 0.1, 0.1, 0.1])
+    assert list(living_room_forecast) == pytest.approx([0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
+    assert list(office_forecast) == pytest.approx([0.1, 0.1, 0.8, 0.8, 0.8, 0.8])
 
 
 def test_multi_room_env_applies_zone_furnace_to_all_rooms_in_zone():
@@ -132,10 +157,10 @@ def test_multi_room_env_applies_zone_furnace_to_all_rooms_in_zone():
     env = IntelliWarmMultiRoomEnv(generator.default_scenarios())
     env.reset(options={"scenario_name": "winter-workday"})
 
-    action = [1, 0, 0, 0, 3, 2]
+    action = [1.0, 0.0, 0.0, 0.0, 1.0, 0.7]
     observation, reward, terminated, truncated, info = env.step(action)
 
-    assert observation.shape == (34,)
+    assert observation.shape == (52,)
     assert reward < 0
     assert terminated is False
     assert truncated is False
@@ -143,6 +168,72 @@ def test_multi_room_env_applies_zone_furnace_to_all_rooms_in_zone():
     assert info["effective_room_actions"]["bedroom"] == "PREHEAT"
     assert info["effective_room_actions"]["living_room"] == "PREHEAT"
     assert info["effective_room_actions"]["office"] == "COMFORT"
+    assert info["effective_room_power_levels"]["bedroom"] == pytest.approx(1.0)
+    assert info["effective_room_power_levels"]["living_room"] == pytest.approx(1.0)
+    assert info["effective_room_power_levels"]["office"] == pytest.approx(0.7)
+
+
+def test_multi_room_env_applies_zone_source_on_same_step():
+    class _PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
+        def _build_simulator(self, scenario):
+            thermal_models = {
+                room_name: PhysicsRoomThermalModel.from_room_config(
+                    room_config,
+                    zone_config=scenario.zone_configs[room_config.zone],
+                    num_zone_rooms=1,
+                )
+                for room_name, room_config in scenario.room_configs.items()
+            }
+            occupancy_predictors = {
+                room_name: OccupancyPredictor(room_name, room_config.occupancy_schedule)
+                for room_name, room_config in scenario.room_configs.items()
+            }
+            return HouseSimulator(
+                room_configs=scenario.room_configs,
+                thermal_models=thermal_models,
+                occupancy_predictors=occupancy_predictors,
+            )
+
+    zone_config = ZoneConfig(
+        zone_id="Residential",
+        has_furnace=True,
+        furnace_btu_per_hour=80000.0,
+        furnace_efficiency=0.80,
+    )
+    room_configs = {
+        "bedroom": RoomConfig(
+            room_id="bedroom",
+            display_name="Bedroom",
+            zone="Residential",
+            target_min_temp=20.0,
+            target_max_temp=22.0,
+            heater_capacity=500.0,
+            heat_loss_factor=0.02,
+            heating_efficiency=0.2,
+        ),
+    }
+    scenario = SyntheticScenarioGenerator().build_scenario(
+        name="source-lag-check",
+        start_time=datetime(2026, 1, 5, 6, 0),
+        room_configs=room_configs,
+        zone_configs={"Residential": zone_config},
+        initial_temperatures={"bedroom": 18.0},
+        outdoor_temperatures=[5.0],
+        electricity_prices=[0.20],
+        gas_prices=[1.20],
+    )
+    env = _PhysicsMultiRoomEnv([scenario])
+
+    obs_electric, _ = env.reset(options={"scenario_name": "source-lag-check"})
+    electric_step, _, _, _, electric_info = env.step([0.0, 1.0])
+
+    obs_furnace, _ = env.reset(options={"scenario_name": "source-lag-check"})
+    furnace_step, _, _, _, furnace_info = env.step([1.0, 1.0])
+
+    assert obs_electric[0] == obs_furnace[0]
+    assert electric_info["zone_heat_sources"]["Residential"] == "electric"
+    assert furnace_info["zone_heat_sources"]["Residential"] == "gas_furnace"
+    assert furnace_step[0] > electric_step[0]
 
 
 def test_multi_room_env_is_deterministic_for_same_scenario_and_actions():
@@ -154,8 +245,8 @@ def test_multi_room_env_is_deterministic_for_same_scenario_and_actions():
     second_env.reset(options={"scenario_name": "weekend-family"})
 
     actions = (
-        [0, 1, 0, 2, 1, 3],
-        [0, 1, 0, 1, 2, 3],
+        [0.0, 1.0, 0.0, 0.5, 0.35, 1.0],
+        [0.0, 1.0, 0.0, 0.25, 0.7, 1.0],
     )
     first_rollout = [first_env.step(action) for action in actions]
     second_rollout = [second_env.step(action) for action in actions]
@@ -174,7 +265,7 @@ def test_constant_policy_uses_env_action_layout():
     )
     action = policy(None, info)
 
-    assert action == [1, 1, 1, 2, 2, 2]
+    assert action == [1.0, 1.0, 0.0, 0.7, 0.7, 0.7]
 
 
 def test_evaluate_policy_rolls_up_metrics_across_scenarios():
@@ -229,3 +320,60 @@ def test_evaluate_policies_script_emits_json_summary(capsys):
     assert exit_code == 0
     assert '"eco-electric"' in captured.out
     assert '"winter-workday"' in captured.out
+
+
+def test_multi_room_env_penalizes_invalid_furnace_request():
+    env = IntelliWarmMultiRoomEnv(SyntheticScenarioGenerator().default_scenarios(), invalid_source_penalty=3.5)
+    env.reset(options={"scenario_name": "winter-workday"})
+
+    _, _, _, _, info = env.step([1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+
+    assert info["requested_zone_heat_sources"]["Work"] == "gas_furnace"
+    assert info["zone_heat_sources"]["Work"] == "electric"
+    assert info["invalid_source_penalty"] == pytest.approx(3.5)
+
+
+def test_multi_room_env_scales_furnace_gas_cost_with_continuous_demand():
+    env = IntelliWarmMultiRoomEnv(SyntheticScenarioGenerator().default_scenarios())
+    env.reset(options={"scenario_name": "weekend-family"})
+
+    _, _, _, _, low_info = env.step([1.0, 1.0, 0.0, 0.30, 0.30, 0.30])
+    env.reset(options={"scenario_name": "weekend-family"})
+    _, _, _, _, high_info = env.step([1.0, 1.0, 0.0, 1.0, 1.0, 1.0])
+
+    assert low_info["gas_cost"] > 0.0
+    assert high_info["gas_cost"] > low_info["gas_cost"]
+    assert low_info["gas_cost"] == pytest.approx(high_info["gas_cost"] * 0.30, rel=1e-3)
+
+
+def test_scenario_bound_price_service_uses_scenario_time_offset():
+    start_time = datetime(2026, 3, 11, 8, 0)
+    service = ScenarioBoundPriceService(
+        electricity_prices=[0.10, 0.20, 0.30],
+        gas_prices=[1.0, 1.1, 1.2],
+        start_time=start_time,
+    )
+
+    first = service.get_price_forecast(1, start_time=start_time)[0]
+    second = service.get_price_forecast(1, start_time=start_time.replace(hour=9))[0]
+
+    assert first["electricity"] == pytest.approx(0.10)
+    assert second["electricity"] == pytest.approx(0.20)
+
+
+def test_scenario_bound_price_service_uses_subhour_step_offsets():
+    start_time = datetime(2026, 3, 11, 8, 0)
+    service = ScenarioBoundPriceService(
+        electricity_prices=[0.10, 0.11, 0.12],
+        gas_prices=[1.0, 1.0, 1.0],
+        start_time=start_time,
+        step_minutes=5,
+    )
+
+    first = service.get_price_forecast(1, start_time=start_time)[0]
+    second = service.get_price_forecast(1, start_time=start_time.replace(minute=5))[0]
+    third = service.get_price_forecast(1, start_time=start_time.replace(minute=10))[0]
+
+    assert first["electricity"] == pytest.approx(0.10)
+    assert second["electricity"] == pytest.approx(0.11)
+    assert third["electricity"] == pytest.approx(0.12)

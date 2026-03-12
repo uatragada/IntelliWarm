@@ -1,5 +1,5 @@
 """
-Rule-based baseline controller with explainable discrete actions.
+Rule-based baseline controller with explainable continuous thermostat demand.
 """
 
 from __future__ import annotations
@@ -7,11 +7,16 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Sequence, Tuple
 
-from intelliwarm.data import ControlDecision, HeatingAction, RoomConfig
+from intelliwarm.data import (
+    action_name_for_power_level,
+    clamp_power_level,
+    ControlDecision,
+    RoomConfig,
+)
 
 
 class BaselineController:
-    """Choose an explainable discrete heating action for a single room."""
+    """Choose an explainable continuous heating demand for a single room."""
 
     def __init__(
         self,
@@ -35,20 +40,20 @@ class BaselineController:
         outside_temp: float = 5.0,
         target_temp: Optional[float] = None,
     ) -> ControlDecision:
-        """Return the next explainable heating action."""
+        """Return the next explainable heating demand."""
         forecast = list(occupancy_forecast) or [0.0]
         occupancy_now = float(forecast[0])
         target = float(target_temp if target_temp is not None else self._default_target_temp())
         next_occupied_step = self._next_occupied_step(forecast)
-        base_action, reasons = self._select_action(
+        base_power, reasons = self._select_power(
             current_temp=current_temp,
             occupancy_now=occupancy_now,
             next_occupied_step=next_occupied_step,
             outside_temp=outside_temp,
             target_temp=target,
         )
-        action, hold_reason = self._apply_hysteresis(
-            proposed_action=base_action,
+        action_power, hold_reason = self._apply_hysteresis(
+            proposed_power=base_power,
             current_action=current_action,
             current_temp=current_temp,
             target_temp=target,
@@ -56,12 +61,17 @@ class BaselineController:
         if hold_reason:
             reasons.append(hold_reason)
 
-        projected_cost = round(action.power_level * float(energy_prices[0] if energy_prices else 0.0), 4)
-        rationale = self._build_rationale(action, reasons, next_occupied_step)
+        projected_cost = round(
+            action_power
+            * (self.room_config.heater_capacity / 1000.0)
+            * float(energy_prices[0] if energy_prices else 0.0),
+            4,
+        )
+        rationale = self._build_rationale(action_power, reasons, next_occupied_step)
 
         return ControlDecision(
             room_id=self.room_config.room_id,
-            action=action,
+            action=action_power,
             source="baseline",
             rationale=rationale,
             reasons=reasons,
@@ -88,112 +98,125 @@ class BaselineController:
     def _next_occupied_step(self, occupancy_forecast: List[float]) -> Optional[int]:
         return next((index for index, value in enumerate(occupancy_forecast) if value >= 0.6), None)
 
-    def _select_action(
+    def _cold_outdoor_boost(self, outside_temp: float) -> float:
+        return min(0.20, max(0.0, (0.0 - float(outside_temp)) * 0.02))
+
+    def _select_power(
         self,
         current_temp: float,
         occupancy_now: float,
         next_occupied_step: Optional[int],
         outside_temp: float,
         target_temp: float,
-    ) -> Tuple[HeatingAction, List[str]]:
+    ) -> Tuple[float, List[str]]:
         comfort_floor = self._comfort_floor()
         comfort_ceiling = self._comfort_ceiling()
         occupied_now = occupancy_now >= 0.6
         occupied_soon = next_occupied_step is not None and 0 < next_occupied_step <= self.preheat_lookahead_steps
+        cold_boost = self._cold_outdoor_boost(outside_temp)
 
         if occupied_now:
+            if current_temp >= comfort_ceiling:
+                return 0.0, [
+                    "Room is occupied but already above the comfort ceiling.",
+                    "Turning heat off to avoid overheating.",
+                ]
+            error = max(target_temp - current_temp, 0.0)
             if current_temp < comfort_floor - 0.5:
-                return HeatingAction.PREHEAT, [
+                return clamp_power_level(0.55 + (0.25 * error) + cold_boost), [
                     "Room is occupied and below the comfort floor.",
-                    "Applying maximum heat to recover comfort quickly.",
+                    "Applying a strong recovery demand to restore comfort quickly.",
                 ]
             if current_temp < target_temp - 0.3 or (outside_temp <= 0.0 and current_temp < target_temp):
-                return HeatingAction.COMFORT, [
+                return clamp_power_level(0.35 + (0.20 * error) + cold_boost + (0.10 * occupancy_now)), [
                     "Room is occupied and below the occupied target.",
-                    "Maintaining comfort without overshooting.",
+                    "Ramping heat to maintain comfort without overshooting.",
                 ]
-            if current_temp <= comfort_ceiling:
-                return HeatingAction.ECO, [
-                    "Room is occupied but already within the comfort band.",
-                    "Holding a low, steady output to reduce cycling.",
-                ]
-            return HeatingAction.OFF, [
-                "Room is occupied but already above the comfort ceiling.",
-                "Turning heat off to avoid overheating.",
+            return clamp_power_level(0.12 + (0.10 * max(comfort_ceiling - current_temp, 0.0)) + (0.5 * cold_boost)), [
+                "Room is occupied and already near the comfort target.",
+                "Holding a light steady demand to reduce cycling.",
             ]
 
         if occupied_soon:
+            urgency = (
+                (self.preheat_lookahead_steps - next_occupied_step + 1) / self.preheat_lookahead_steps
+                if next_occupied_step is not None
+                else 0.0
+            )
+            target_gap = max(target_temp - current_temp, 0.0)
             if current_temp < comfort_floor - 0.5:
-                return HeatingAction.PREHEAT, [
+                return clamp_power_level(0.45 + (0.20 * target_gap) + (0.20 * urgency) + cold_boost), [
                     "Occupancy is expected soon and the room is too cold.",
-                    "Preheating now reduces comfort lag at arrival.",
+                    "Starting an aggressive preheat so comfort is ready at arrival.",
                 ]
             if current_temp < target_temp - 1.0:
-                return HeatingAction.COMFORT, [
+                return clamp_power_level(0.25 + (0.18 * target_gap) + (0.25 * urgency) + cold_boost), [
                     "Occupancy is expected soon and the room is below target.",
                     "Starting comfort recovery ahead of arrival.",
                 ]
-            return HeatingAction.ECO, [
+            return clamp_power_level(0.10 + (0.12 * urgency) + (0.5 * cold_boost)), [
                 "Occupancy is expected soon, but the room is not far from target.",
-                "Using ECO to coast toward comfort efficiently.",
+                "Using a light preheat demand to coast toward comfort efficiently.",
             ]
 
         if current_temp < comfort_floor:
-            return HeatingAction.ECO, [
+            return clamp_power_level(0.15 + (0.20 * (comfort_floor - current_temp)) + cold_boost), [
                 "Room is unoccupied but below the minimum protection temperature.",
-                "Using ECO to protect the room while saving energy.",
+                "Applying a modest protection demand while saving energy.",
             ]
 
         if outside_temp < 0.0 and current_temp < comfort_floor + 0.5:
-            return HeatingAction.ECO, [
+            return clamp_power_level(0.08 + (0.15 * (comfort_floor + 0.5 - current_temp)) + (0.5 * cold_boost)), [
                 "Outdoor conditions are cold and the room is near the protection floor.",
-                "Using ECO to reduce cold-soak risk.",
+                "Adding a small hold demand to reduce cold-soak risk.",
             ]
 
-        return HeatingAction.OFF, [
+        return 0.0, [
             "Room is unoccupied and above the protection floor.",
             "Turning heat off to minimize cost.",
         ]
 
     def _apply_hysteresis(
         self,
-        proposed_action: HeatingAction,
+        proposed_power: float,
         current_action: float,
         current_temp: float,
         target_temp: float,
-    ) -> Tuple[HeatingAction, Optional[str]]:
-        current_action_enum = HeatingAction.from_value(current_action)
+    ) -> Tuple[float, Optional[str]]:
+        proposed = clamp_power_level(proposed_power)
+        current = clamp_power_level(current_action)
 
         if (
-            proposed_action == HeatingAction.OFF
-            and current_action_enum == HeatingAction.ECO
+            proposed <= 0.05
+            and current >= 0.20
             and current_temp < self._comfort_floor() + 0.2
         ):
-            return current_action_enum, "Holding ECO to avoid chatter near the protection floor."
+            return min(current, 0.35), "Holding some heat to avoid chatter near the protection floor."
 
         if (
-            proposed_action == HeatingAction.ECO
-            and current_action_enum == HeatingAction.COMFORT
+            proposed < current
+            and current >= 0.55
             and current_temp < target_temp - 0.1
         ):
-            return current_action_enum, "Holding COMFORT briefly to avoid oscillating around the target."
+            return max(proposed, current - 0.10), "Tapering heat gradually to avoid oscillating around the target."
 
         if (
-            proposed_action == HeatingAction.COMFORT
-            and current_action_enum == HeatingAction.PREHEAT
+            proposed < current
+            and current >= 0.85
             and current_temp < target_temp - 0.5
         ):
-            return current_action_enum, "Holding PREHEAT until the room is closer to the occupied target."
+            return max(proposed, current - 0.10), "Holding a stronger recovery demand until the room is closer to target."
 
-        return proposed_action, None
+        return proposed, None
 
     def _build_rationale(
         self,
-        action: HeatingAction,
+        action: float,
         reasons: Sequence[str],
         next_occupied_step: Optional[int],
     ) -> str:
-        summary = f"{action.name} selected."
+        action_label = action_name_for_power_level(action)
+        summary = f"{action_label}-like demand ({clamp_power_level(action):.2f}) selected."
         if next_occupied_step is not None and next_occupied_step > 0:
             summary += f" Expected occupancy begins in {next_occupied_step} step(s)."
         if reasons:

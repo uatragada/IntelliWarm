@@ -7,18 +7,19 @@ electric space heaters (per room) based on projected hourly cost.
 Decision logic
 --------------
 For each zone at each timestep:
-  1. Use the BaselineController to get a per-room action recommendation.
-  2. Identify which rooms actually need heat (action != OFF).
+  1. Use the BaselineController to get a per-room heating-demand recommendation.
+  2. Identify which rooms actually need heat (demand > 0).
   3. Compute:
-       electric_cost  = sum of (heater_capacity_kw * action.power_level
+       electric_cost  = sum of (heater_capacity_kw * room_demand
                                 * electricity_price) for each room needing heat
-       furnace_cost   = (furnace_btu_per_hour / 100_000)
+       furnace_cost   = zone_demand
+                        * (furnace_btu_per_hour / 100_000)
                         / furnace_efficiency * gas_price_per_therm
   4. If the zone has a furnace and furnace_cost < electric_cost:
-       activate the furnace for the whole zone; all rooms get the max action
-       level among the rooms that need heat.
+       activate the furnace for the whole zone; all rooms share the highest
+       demanded normalized output among the rooms that need heat.
      Else:
-       keep per-room electric actions from the baseline.
+       keep per-room electric demands from the baseline.
 
 The furnace heats the entire zone uniformly — you cannot target individual
 rooms with a central gas furnace.  Individual electric heaters allow
@@ -31,8 +32,9 @@ import logging
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from intelliwarm.data.models import (
+    action_name_for_power_level,
+    clamp_power_level,
     ControlDecision,
-    HeatingAction,
     HeatSourceType,
     HybridHeatingDecision,
     RoomConfig,
@@ -49,18 +51,18 @@ logger = logging.getLogger("IntelliWarm.HybridController")
 # ---------------------------------------------------------------------------
 
 def _electric_room_cost(
-    action: HeatingAction,
+    action: float,
     heater_capacity_watts: float,
     electricity_price_kwh: float,
 ) -> float:
     """$/hr for a single electric heater at the given action level."""
     heater_kw = heater_capacity_watts / 1000.0
-    return action.power_level * heater_kw * electricity_price_kwh
+    return clamp_power_level(action) * heater_kw * electricity_price_kwh
 
 
-def _furnace_hourly_cost(zone_config: ZoneConfig, gas_price_per_therm: float) -> float:
-    """$/hr to run the zone furnace at full output."""
-    return zone_config.hourly_gas_cost(gas_price_per_therm)
+def _furnace_hourly_cost(zone_config: ZoneConfig, gas_price_per_therm: float, demand: float = 1.0) -> float:
+    """$/hr to run the zone furnace at the requested normalized output."""
+    return clamp_power_level(demand) * zone_config.hourly_gas_cost(gas_price_per_therm)
 
 
 # ---------------------------------------------------------------------------
@@ -164,21 +166,25 @@ class HybridController:
         rooms_needing_heat = [
             room_id
             for room_id, decision in per_room_decisions.items()
-            if decision.action != HeatingAction.OFF
+            if clamp_power_level(decision.action) > 0.01
         ]
 
         # Step 3 — cost comparison
         electric_cost = sum(
             _electric_room_cost(
-                action=per_room_decisions[room_id].action,
+                action=clamp_power_level(per_room_decisions[room_id].action),
                 heater_capacity_watts=self.room_configs[room_id].heater_capacity,
                 electricity_price_kwh=electricity_price,
             )
             for room_id in rooms_needing_heat
         )
+        zone_demand = max(
+            (clamp_power_level(per_room_decisions[room_id].action) for room_id in rooms_needing_heat),
+            default=0.0,
+        )
 
         furnace_cost = (
-            _furnace_hourly_cost(self.zone_config, gas_price)
+            _furnace_hourly_cost(self.zone_config, gas_price, demand=zone_demand)
             if self.zone_config.has_furnace
             else float("inf")
         )
@@ -187,6 +193,7 @@ class HybridController:
         use_furnace = (
             self.zone_config.has_furnace
             and bool(rooms_needing_heat)
+            and zone_demand > 0.01
             and furnace_cost < electric_cost
         )
 
@@ -194,12 +201,8 @@ class HybridController:
             heat_source = HeatSourceType.GAS_FURNACE
             # Furnace heats the whole zone uniformly; apply the highest
             # demanded action level across all rooms that need heat.
-            zone_action = max(
-                (per_room_decisions[r].action for r in rooms_needing_heat),
-                key=lambda a: a.power_level,
-            )
-            per_room_actions: Dict[str, HeatingAction] = {
-                room_id: zone_action for room_id in self.room_configs
+            per_room_actions: Dict[str, float] = {
+                room_id: zone_demand for room_id in self.room_configs
             }
             chosen_cost = furnace_cost
             rationale = (
@@ -207,12 +210,13 @@ class HybridController:
                 f"{len(rooms_needing_heat)} of {len(self.room_configs)} room(s) need heat. "
                 f"Furnace cost (${furnace_cost:.4f}/hr) is lower than "
                 f"electric total (${electric_cost:.4f}/hr). "
-                f"All zone rooms set to {zone_action.name}."
+                f"All zone rooms share a {action_name_for_power_level(zone_demand)}-like "
+                f"demand ({zone_demand:.2f})."
             )
         elif rooms_needing_heat:
             heat_source = HeatSourceType.ELECTRIC
             per_room_actions = {
-                room_id: per_room_decisions[room_id].action
+                room_id: clamp_power_level(per_room_decisions[room_id].action)
                 for room_id in self.room_configs
             }
             chosen_cost = electric_cost
@@ -222,7 +226,7 @@ class HybridController:
                     f"{len(rooms_needing_heat)} of {len(self.room_configs)} room(s) need heat. "
                     f"Electric total (${electric_cost:.4f}/hr) is lower than "
                     f"furnace cost (${furnace_cost:.4f}/hr). "
-                    f"Each room keeps its individual baseline action."
+                    f"Each room keeps its individual continuous demand."
                 )
             else:
                 rationale = (
@@ -233,7 +237,7 @@ class HybridController:
             # No rooms need heat
             heat_source = HeatSourceType.ELECTRIC
             per_room_actions = {
-                room_id: HeatingAction.OFF for room_id in self.room_configs
+                room_id: 0.0 for room_id in self.room_configs
             }
             chosen_cost = 0.0
             rationale = (

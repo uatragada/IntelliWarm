@@ -8,8 +8,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from intelliwarm.data import HeatingAction, OccupancyWindow, RoomConfig
-from intelliwarm.models import HouseSimulator, RoomThermalModel
+from intelliwarm.data import HeatSourceType, HeatingAction, OccupancyWindow, RoomConfig, ZoneConfig
+from intelliwarm.models import HouseSimulator, PhysicsRoomThermalModel, RoomThermalModel
 from intelliwarm.prediction import OccupancyPredictor
 
 
@@ -125,3 +125,66 @@ def test_house_simulator_runs_deterministic_multi_room_day():
     assert states[1].room_temperatures["bedroom"] > states[0].room_temperatures["bedroom"]
     assert states[1].occupancy["bedroom"] >= 0.8
     assert states[10].occupancy["bedroom"] == 0.1
+
+
+def test_house_simulator_simulate_preserves_heat_source_plan():
+    room_config = RoomConfig(
+        room_id="bedroom",
+        display_name="Bedroom",
+        zone="Residential",
+        target_min_temp=20.0,
+        target_max_temp=22.0,
+        heater_capacity=1000.0,
+        heat_loss_factor=0.02,
+        heating_efficiency=0.8,
+        heat_source=HeatSourceType.ELECTRIC,
+    )
+    zone_config = ZoneConfig(
+        zone_id="Residential",
+        has_furnace=True,
+        furnace_btu_per_hour=60_000.0,
+        furnace_efficiency=0.80,
+    )
+    simulator = HouseSimulator(
+        room_configs={"bedroom": room_config},
+        thermal_models={
+            "bedroom": PhysicsRoomThermalModel.from_room_config(
+                room_config,
+                zone_config=zone_config,
+                num_zone_rooms=1,
+            )
+        },
+    )
+
+    start_time = datetime(2026, 3, 11, 8, 0)
+    outdoor_temps = [5.0, 5.0]
+    heating_plan = [{"bedroom": 1.0}, {"bedroom": 1.0}]
+
+    electric_only = simulator.simulate(
+        start_time=start_time,
+        initial_temperatures={"bedroom": 18.0},
+        outdoor_temperatures=outdoor_temps,
+        heating_plan=heating_plan,
+        initial_heat_sources={"bedroom": HeatSourceType.ELECTRIC},
+        heat_source_plan=[
+            {"bedroom": HeatSourceType.ELECTRIC},
+            {"bedroom": HeatSourceType.ELECTRIC},
+        ],
+    )
+    switched_to_furnace = simulator.simulate(
+        start_time=start_time,
+        initial_temperatures={"bedroom": 18.0},
+        outdoor_temperatures=outdoor_temps,
+        heating_plan=heating_plan,
+        initial_heat_sources={"bedroom": HeatSourceType.ELECTRIC},
+        heat_source_plan=[
+            {"bedroom": HeatSourceType.ELECTRIC},
+            {"bedroom": HeatSourceType.GAS_FURNACE},
+        ],
+    )
+
+    assert electric_only[1].heat_sources["bedroom"] == HeatSourceType.ELECTRIC
+    assert electric_only[2].heat_sources["bedroom"] == HeatSourceType.ELECTRIC
+    assert switched_to_furnace[1].heat_sources["bedroom"] == HeatSourceType.ELECTRIC
+    assert switched_to_furnace[2].heat_sources["bedroom"] == HeatSourceType.GAS_FURNACE
+    assert switched_to_furnace[2].room_temperatures["bedroom"] > electric_only[2].room_temperatures["bedroom"]

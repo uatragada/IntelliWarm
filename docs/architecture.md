@@ -13,8 +13,8 @@ IntelliWarm's primary value is **zone-level hybrid heating cost minimization**. 
 This decision is made by `HybridController` using live energy prices and per-room heat needs:
 
 ```
-electric_cost  = Σ (heater_kW × action.power_level × electricity_$/kWh)  per room needing heat
-furnace_cost   = (furnace_btu_per_hour / 100_000) / efficiency × gas_$/therm
+electric_cost  = Σ (heater_kW × room_demand × electricity_$/kWh)  per room needing heat
+furnace_cost   = zone_demand × zone.hourly_gas_cost(gas_$/therm)
 
 if zone.has_furnace and furnace_cost < electric_cost → gas furnace (zone-wide)
 else                                                 → electric heaters (per room)
@@ -37,9 +37,9 @@ Electric heaters = room-level actuators. Independent per-room control. Cheaper w
 - `intelliwarm/data/models.py`: shared domain contracts:
 	- `HeatSourceType` — `ELECTRIC` or `GAS_FURNACE`
 	- `ZoneConfig` — zone identity, furnace specs (`btu_per_hour`, `efficiency` AFUE), `hourly_gas_cost()`
-	- `HybridHeatingDecision` — zone-level decision with full cost breakdown, per-room action map, rationale
+	- `HybridHeatingDecision` — zone-level decision with full cost breakdown, per-room normalized-demand map, rationale
 	- `RoomConfig` — room identity, thermal parameters, `heat_source` field
-	- `HeatingAction` — `OFF`, `ECO`, `COMFORT`, `PREHEAT` intensity levels
+	- `HeatingAction` — legacy label bands used for compatibility and reporting around continuous demand
 	- `SimulationState`, `ControlDecision`, `ForecastBundle`, `ForecastStep`
 - `intelliwarm/models/thermal_model.py`: room thermal dynamics with `step()` and `simulate()`
 - `intelliwarm/models/simulator.py`: deterministic `HouseSimulator`
@@ -53,8 +53,8 @@ Electric heaters = room-level actuators. Independent per-room control. Cheaper w
 ### Control Layer
 
 - **`intelliwarm/control/hybrid_controller.py`: zone-level hybrid cost decision engine — primary actuator decision point for all zone heating** (see interface below)
-- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based controller; supplies per-room heat needs as inputs to `HybridController`
-- `intelliwarm/optimizer/mpc_controller.py`: continuous MPC (action contracts should converge with hybrid controller over time)
+- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based controller; supplies continuous per-room heat demand as inputs to `HybridController`
+- `intelliwarm/optimizer/mpc_controller.py`: continuous MPC (action contracts should converge with the shared normalized-demand runtime contract)
 
 #### HybridController Interface
 
@@ -72,7 +72,7 @@ class HybridController:
 		) -> HybridHeatingDecision
 ```
 
-`HybridHeatingDecision` carries: `furnace_on`, `heat_source`, `per_room_actions`, `electric_hourly_cost`, `furnace_hourly_cost`, `chosen_hourly_cost`, `rationale`.
+`HybridHeatingDecision` carries: `furnace_on`, `heat_source`, `per_room_actions`, `per_room_action_labels`, `electric_hourly_cost`, `furnace_hourly_cost`, `chosen_hourly_cost`, `rationale`.
 
 ### Integration Layer
 
@@ -100,10 +100,10 @@ class HybridController:
 
 When `HybridHeatingDecision.furnace_on is True`:
 - `DeviceController` must emit a zone-level furnace relay or thermostat signal
-- Per-room electric heaters in the same zone must be deactivated (set to OFF) to prevent double-heating costs
+- Per-room electric heaters in the same zone must be deactivated (set to `0.0` demand) to prevent double-heating costs
 
 When `HybridHeatingDecision.furnace_on is False`:
-- `DeviceController` emits per-room electric heater commands from `per_room_actions`
+- `DeviceController` emits per-room electric heater commands from `per_room_actions` as normalized demand levels
 - Furnace relay (if present) must be set to OFF
 
 These actuation semantics must be honored in both simulation and live hardware modes.

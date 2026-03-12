@@ -19,7 +19,7 @@
 ### Control Foundation
 
 - explainable baseline controller added under `intelliwarm/control/baseline_controller.py`
-- shared runtime support added for discrete `OFF`, `ECO`, `COMFORT`, and `PREHEAT` actions
+- shared runtime support added for normalized `0.0..1.0` heat demand with legacy action labels for reporting
 - baseline controller exposed through runtime and optimization API selection
 
 ### Forecast Foundation
@@ -66,8 +66,8 @@
 - `RoomConfig.heat_source` field; `SimulationState.heat_sources` dict
 - `HybridController` implemented in `intelliwarm/control/hybrid_controller.py`
 	- calls `BaselineController` per room to determine heat needs
-	- computes electric vs. furnace hourly cost
-	- selects the cheaper source; when furnace wins, all zone rooms get the max demanded action
+	- computes electric vs. furnace hourly cost using continuous normalized demand
+	- selects the cheaper source; when furnace wins, all zone rooms get the max demanded normalized output
 	- returns `HybridHeatingDecision` with rationale for every decision
 - `configs/config.yaml` updated: rooms have `heat_source`; `Residential` zone has furnace specs; `Work` zone has no furnace
 - `intelliwarm/core/config.py` updated: `RoomSettings.heat_source`, `ZoneSettings` furnace fields
@@ -101,15 +101,18 @@
 ### Gym-Compatible Learning Boundary
 
 - `intelliwarm/learning/gym_env.py` adds a deterministic room-level environment with Gym-compatible `reset()` / `step()` APIs
-- the environment reuses IntelliWarm's discrete `OFF`, `ECO`, `COMFORT`, and `PREHEAT` action space
+- the environment exposes continuous `Box` actions for normalized heat demand
 - observations include current temperature, target band, occupancy probability, outdoor temperature, and current gas/electricity prices
 - the environment keeps ML experimentation offline-safe by using the same simulator and pricing contracts as the rest of the platform
 - regression coverage verifies deterministic rollouts and action-label mapping
 
 ### Multi-Room Training Environment And Scenario Library
 
-- `IntelliWarmMultiRoomEnv` adds a padded `MultiDiscrete` action space spanning zone heat-source choices plus per-room heating modes
+- `IntelliWarmMultiRoomEnv` adds a padded continuous `Box` action space spanning zone heat-source signals plus per-room heat demand
 - the environment reuses the deterministic `HouseSimulator` and applies gas-furnace vs. electric semantics at zone scope
+- room observations now include forward occupancy forecast slices for each room without duplicating the current hour
+- invalid furnace requests are penalized explicitly instead of being silently erased from the reward
+- requested zone heat sources apply on the same simulator step instead of one step late
 - `SyntheticScenarioGenerator` builds deterministic multi-room, multi-zone scenarios with varied schedules, weather, and price profiles
 - scenario resets can cycle through different training situations without introducing randomness
 - regression coverage verifies scenario generation, zone furnace propagation, and deterministic multi-room rollouts
@@ -117,7 +120,7 @@
 ### Deterministic Policy Evaluation Utilities
 
 - `intelliwarm/learning/evaluation.py` adds reusable helpers for rolling a policy across one or more named scenarios
-- evaluation summaries aggregate total reward, energy cost, comfort violation, and final zone heat-source decisions per scenario
+- evaluation summaries aggregate total reward, energy cost, reported comfort violation, and final zone heat-source decisions per scenario
 - constant-policy helpers provide a simple baseline contract for future learned-policy or heuristic comparisons
 - regression coverage verifies action-layout handling and multi-scenario metric aggregation
 
@@ -147,7 +150,8 @@
   - `steady_state_delta_t` reflects combined capacity; `hvac_power_w` kept as backward-compat alias for `electric_power_w`
   - `simulate()` reads `furnace_heating_power` from forecast input dicts
 - `RoomThermalModel` (legacy) accepts `furnace_heating_power` kwarg and ignores it for API compatibility
-- `HouseSimulator.step()` reads `state.heat_sources` per room: `GAS_FURNACE` routes the action to `furnace_heating_power`, `ELECTRIC`/default routes to `heating_power`, ensuring the hybrid controller's source choice is faithfully simulated
+- `HouseSimulator.step()` reads `state.heat_sources` per room: `GAS_FURNACE` routes the normalized action to `furnace_heating_power`, `ELECTRIC`/default routes to `heating_power`, ensuring the hybrid controller's source choice is faithfully simulated
+- `HouseSimulator.simulate()` preserves `heat_sources` across the horizon and can apply per-step source plans
 - 20 new tests added to `tests/test_thermal_physics_model.py` covering all dual-source paths, `from_room_config` with/without `ZoneConfig`, and simulator routing; 95 tests pass
 
 ### dm4bem-Inspired Physics Improvements
@@ -200,7 +204,7 @@ The dashboard now exposes the live hybrid heating choice to operators. The next 
 Future ML control work should now build on the implemented room and multi-room training environments plus deterministic evaluation helpers.
 
 - Extend the current CLI/scripts to compare learned policies against hybrid and MPC baselines on the deterministic scenario library
-- Reuse `OFF`, `ECO`, `COMFORT`, and `PREHEAT` actions so trained policies stay compatible with the live runtime
+- Reuse the shared normalized-demand runtime contract so trained policies stay compatible with the live runtime
 - Support both pure simulation training and offline evaluation against recorded scenarios
 - Keep learned-policy execution behind the same runtime and safety boundaries as other controllers
 

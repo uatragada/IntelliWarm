@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 class HeatSourceType(Enum):
@@ -49,8 +49,36 @@ class HeatingAction(Enum):
             if normalized in cls.__members__:
                 return cls[normalized]
 
-        numeric_value = float(value)
+        numeric_value = clamp_power_level(value)
         return min(cls, key=lambda action: abs(action.power_level - numeric_value))
+
+
+HeatingCommand = Union[HeatingAction, float]
+
+
+def clamp_power_level(value: Any) -> float:
+    """Resolve any supported action representation to a clamped 0..1 power level."""
+    if isinstance(value, HeatingAction):
+        numeric_value = value.power_level
+    elif isinstance(value, str):
+        normalized = value.strip().upper()
+        if normalized in HeatingAction.__members__:
+            numeric_value = HeatingAction[normalized].power_level
+        else:
+            numeric_value = float(value)
+    else:
+        numeric_value = float(value)
+    return max(0.0, min(1.0, numeric_value))
+
+
+def action_label_for_power_level(value: Any) -> HeatingAction:
+    """Map a continuous 0..1 demand back to the nearest named IntelliWarm band."""
+    return HeatingAction.from_value(clamp_power_level(value))
+
+
+def action_name_for_power_level(value: Any) -> str:
+    """Return the legacy action label for a continuous demand."""
+    return action_label_for_power_level(value).name
 
 
 @dataclass(frozen=True)
@@ -157,7 +185,7 @@ class SimulationState:
     timestamp: datetime
     outdoor_temp: float
     room_temperatures: Dict[str, float]
-    heating_actions: Dict[str, HeatingAction]
+    heating_actions: Dict[str, float]
     occupancy: Dict[str, float]
     heat_sources: Dict[str, HeatSourceType] = field(default_factory=dict)
 
@@ -225,7 +253,7 @@ class ControlDecision:
     """Shared control decision contract for baseline and runtime consumers."""
 
     room_id: str
-    action: HeatingAction
+    action: HeatingCommand
     source: str
     rationale: str
     reasons: List[str] = field(default_factory=list)
@@ -241,12 +269,14 @@ class ControlDecision:
         heat_source = self.metadata.get("heat_source", HeatSourceType.ELECTRIC.value)
         if isinstance(heat_source, HeatSourceType):
             heat_source = heat_source.value
+        next_action = clamp_power_level(self.action)
+        next_action_label = action_name_for_power_level(self.action)
         return {
             "room": self.room_id,
             "controller": self.source,
-            "action": self.action.name,
-            "next_action": self.action.power_level,
-            "next_action_label": self.action.name,
+            "action": next_action_label,
+            "next_action": next_action,
+            "next_action_label": next_action_label,
             "total_cost": self.projected_cost,
             "heat_source": heat_source,
             "target_temp": self.target_temp,
@@ -310,7 +340,7 @@ class HybridHeatingDecision:
     zone: str
     heat_source: HeatSourceType
     furnace_on: bool
-    per_room_actions: Dict[str, HeatingAction]
+    per_room_actions: Dict[str, float]
     rooms_needing_heat: List[str]
     electric_hourly_cost: float
     furnace_hourly_cost: float
@@ -324,7 +354,12 @@ class HybridHeatingDecision:
             "furnace_on": self.furnace_on,
             "rooms_needing_heat": list(self.rooms_needing_heat),
             "per_room_actions": {
-                room: action.name for room, action in self.per_room_actions.items()
+                room: round(clamp_power_level(action), 4)
+                for room, action in self.per_room_actions.items()
+            },
+            "per_room_action_labels": {
+                room: action_name_for_power_level(action)
+                for room, action in self.per_room_actions.items()
             },
             "electric_hourly_cost": round(self.electric_hourly_cost, 4),
             "furnace_hourly_cost": round(self.furnace_hourly_cost, 4),

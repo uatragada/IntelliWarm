@@ -13,7 +13,6 @@ Scenarios covered:
 import pytest
 
 from intelliwarm.data.models import (
-    HeatingAction,
     HeatSourceType,
     HybridHeatingDecision,
     RoomConfig,
@@ -207,7 +206,7 @@ def test_no_heat_when_all_rooms_at_setpoint():
     assert result.furnace_on is False
     assert result.rooms_needing_heat == []
     for action in result.per_room_actions.values():
-        assert action == HeatingAction.OFF
+        assert action <= 0.05
     assert result.chosen_hourly_cost == 0.0
 
 
@@ -263,10 +262,10 @@ def test_furnace_action_level_is_max_across_needing_rooms():
 
     if result.furnace_on:
         actions = list(result.per_room_actions.values())
-        max_level = max(a.power_level for a in actions)
+        max_level = max(actions)
         # All rooms should share the same zone-wide action level
         for action in actions:
-            assert action.power_level == pytest.approx(max_level)
+            assert action == pytest.approx(max_level)
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +291,11 @@ def test_hybrid_decision_to_dict_structure():
     assert "heat_source" in d
     assert "furnace_on" in d
     assert "per_room_actions" in d
+    assert "per_room_action_labels" in d
     assert "rooms_needing_heat" in d
     assert "electric_hourly_cost" in d
     assert "furnace_hourly_cost" in d
     assert "chosen_hourly_cost" in d
     assert "rationale" in d
     assert d["heat_source"] in ("electric", "gas_furnace")
+    assert all(0.0 <= power <= 1.0 for power in d["per_room_actions"].values())

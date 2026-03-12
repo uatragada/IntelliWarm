@@ -398,7 +398,7 @@ Occupancy forecasting should support:
 
 ### Phase 4 — MPC optimizer
 
-Status: existing continuous MPC is present; the planned work is to evolve it toward discrete, explainable planning rather than replacing it outright.
+Status: existing continuous MPC is present; the planned work is to converge it on the shared normalized-demand and explanation contracts used by runtime, hybrid control, and learning.
 
 Purpose: implement the intelligent core of IntelliWarm.
 
@@ -429,7 +429,7 @@ For each timestep over a finite horizon, minimize:
 
 #### Copilot-ready tasks
 
-1. Define discrete action space for each room: `OFF`, `ECO`, `COMFORT`, `PREHEAT`.
+1. Define normalized room-demand action space for each room (`0.0..1.0`) with compatibility labels such as `OFF`, `ECO`, `COMFORT`, and `PREHEAT`.
 2. Create `ObjectiveWeights` config structure.
 3. Implement temperature rollout over a finite planning horizon.
 4. Implement `score_plan()` for energy, comfort, and switching.
@@ -655,7 +655,7 @@ Status: deterministic Gym-compatible room and multi-room environments, reusable 
 
 #### Prompt for Copilot
 
-> Create a baseline HVAC controller for IntelliWarm that uses occupancy-aware temperature bands. The controller should recommend OFF, ECO, COMFORT, or PREHEAT actions and explain each decision in plain language.
+> Create a baseline HVAC controller for IntelliWarm that uses occupancy-aware temperature bands. The controller should recommend continuous normalized heat demand from 0 to 1, include compatibility labels such as OFF/ECO/COMFORT/PREHEAT for reporting, and explain each decision in plain language.
 
 ---
 
@@ -675,7 +675,7 @@ Status: deterministic Gym-compatible room and multi-room environments, reusable 
 
 #### Prompt for Copilot
 
-> Implement a model predictive control planner for IntelliWarm using a finite horizon and discrete action space. Simulate future room temperatures, calculate energy cost and comfort penalties, penalize switching, and return the best plan plus explanation metadata.
+> Implement a model predictive control planner for IntelliWarm using a finite horizon and continuous normalized demand action space. Simulate future room temperatures, calculate energy cost and comfort penalties, penalize switching, and return the best plan plus explanation metadata.
 
 ---
 
@@ -868,7 +868,7 @@ Each PR should include:
 
 ### Prompt 3 — Build optimizer
 
-> Implement a finite-horizon MPC optimizer for IntelliWarm using discrete room actions. Score plans based on energy cost, comfort violations, and switching penalties. Return the best current action and a structured explanation of the plan.
+> Implement a finite-horizon MPC optimizer for IntelliWarm using continuous room-demand control. Score plans based on energy cost, comfort violations, and switching penalties. Return the best current action and a structured explanation of the plan.
 
 ### Prompt 4 — Add tests
 
@@ -909,7 +909,7 @@ The MVP is complete when:
 10. Implement baseline controller with explanations
 11. Add objective function and cost calculator
 12. Implement horizon forecast bundle service
-13. Implement MPC planner with discrete actions
+13. Implement MPC planner with continuous normalized demand control
 14. Add dashboard views for room temps and recommended actions
 15. Add pytest unit tests for simulator and controllers
 

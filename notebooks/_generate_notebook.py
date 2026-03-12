@@ -112,6 +112,7 @@ from intelliwarm.data import (
     RoomConfig, ZoneConfig, HeatSourceType, HeatingAction, OccupancyWindow,
     SimulationState,
 )
+from intelliwarm.control import BaselineController, HybridController
 from intelliwarm.models import PhysicsRoomThermalModel, HouseSimulator
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.learning.scenario_generator import TrainingScenario, SyntheticScenarioGenerator
@@ -262,6 +263,11 @@ to preheat before occupancy windows open.
 
 code("""\
 gen = SyntheticScenarioGenerator()
+STEP_MINUTES = 5
+STEPS_PER_HOUR = 60 // STEP_MINUTES
+
+def _expand_hourly_profile(values: Sequence[float]) -> List[float]:
+    return [float(v) for v in values for _ in range(STEPS_PER_HOUR)]
 
 # ── Winter Workday ────────────────────────────────────────────────────────────
 # Monday Jan 5: kids go to school, parent WFH; ToU peak pricing 7-10am and 5-9pm
@@ -271,19 +277,20 @@ winter_workday = gen.build_scenario(
     room_configs=ROOMS,
     zone_configs=ZONES,
     initial_temperatures={r: 15.0 for r in ROOMS},
-    outdoor_temperatures=[
+    outdoor_temperatures=_expand_hourly_profile([
         -12,-13,-13,-14,-14,-13,  # 00-05  pre-dawn coldest
          -11, -9, -7, -5, -3, -1,  # 06-11  warming
            0,  1,  2,  1,  0, -1,  # 12-17  mild afternoon
           -3, -5, -7, -9,-10,-11,  # 18-23  cooling fast
-    ],
-    electricity_prices=[
+    ]),
+    electricity_prices=_expand_hourly_profile([
         0.07, 0.07, 0.07, 0.07, 0.07, 0.07,  # 00-05  cheap overnight
         0.12, 0.22, 0.28, 0.26, 0.22, 0.16,  # 06-11  morning peak
         0.14, 0.14, 0.14, 0.14, 0.16, 0.20,  # 12-17  mid-day
         0.26, 0.28, 0.28, 0.24, 0.16, 0.10,  # 18-23  evening peak
-    ],
-    gas_prices=[1.20] * 24,
+    ]),
+    gas_prices=[1.20] * (24 * STEPS_PER_HOUR),
+    step_minutes=STEP_MINUTES,
     description="Cold January weekday: sharp morning/evening pricing peaks",
 )
 
@@ -295,19 +302,20 @@ winter_weekend = gen.build_scenario(
     room_configs=ROOMS,
     zone_configs=ZONES,
     initial_temperatures={r: 16.0 for r in ROOMS},
-    outdoor_temperatures=[
+    outdoor_temperatures=_expand_hourly_profile([
          -8, -9, -9,-10, -9, -8,   # 00-05
          -6, -4, -2,  0,  2,  3,   # 06-11
           4,  4,  3,  2,  1,  0,   # 12-17
          -1, -2, -3, -4, -5, -6,   # 18-23
-    ],
-    electricity_prices=[
+    ]),
+    electricity_prices=_expand_hourly_profile([
         0.08, 0.08, 0.08, 0.08, 0.08, 0.08,
         0.10, 0.12, 0.14, 0.14, 0.14, 0.14,
         0.14, 0.14, 0.14, 0.14, 0.14, 0.16,
         0.18, 0.18, 0.16, 0.14, 0.12, 0.10,
-    ],
-    gas_prices=[1.20] * 24,
+    ]),
+    gas_prices=[1.20] * (24 * STEPS_PER_HOUR),
+    step_minutes=STEP_MINUTES,
     description="Cold January Saturday: family home all day, flat electricity",
 )
 
@@ -319,24 +327,28 @@ spring_workday = gen.build_scenario(
     room_configs=ROOMS,
     zone_configs=ZONES,
     initial_temperatures={r: 17.5 for r in ROOMS},
-    outdoor_temperatures=[
+    outdoor_temperatures=_expand_hourly_profile([
          4, 3, 3, 3, 4, 5,   # 00-05
          7, 9,11,12,13,14,   # 06-11
         15,15,14,13,11, 9,   # 12-17
          8, 7, 6, 6, 5, 5,   # 18-23
-    ],
-    electricity_prices=[
+    ]),
+    electricity_prices=_expand_hourly_profile([
         0.08, 0.08, 0.08, 0.08, 0.08, 0.08,
         0.10, 0.16, 0.20, 0.18, 0.14, 0.12,
         0.12, 0.12, 0.12, 0.12, 0.14, 0.18,
         0.22, 0.22, 0.18, 0.14, 0.10, 0.08,
-    ],
-    gas_prices=[1.20] * 24,
+    ]),
+    gas_prices=[1.20] * (24 * STEPS_PER_HOUR),
+    step_minutes=STEP_MINUTES,
     description="Mild March weekday: less heating needed, electric sometimes cheaper",
 )
 
 SCENARIOS = [winter_workday, winter_weekend, spring_workday]
-print(f"Created {len(SCENARIOS)} training scenarios (each 24 steps × 60 min):")
+print(
+    f"Created {len(SCENARIOS)} training scenarios "
+    f"(each {24 * STEPS_PER_HOUR} steps × {STEP_MINUTES} min = 24 h):"
+)
 for s in SCENARIOS:
     T_range = (min(s.outdoor_temperatures), max(s.outdoor_temperatures))
     E_range = (min(s.electricity_prices), max(s.electricity_prices))
@@ -347,7 +359,7 @@ for s in SCENARIOS:
 code("""\
 # ── Visualise scenario profiles ───────────────────────────────────────────────
 fig, axes = plt.subplots(2, 3, figsize=(14, 6), sharex=True)
-hours = list(range(24))
+hours = np.arange(SCENARIOS[0].horizon_steps) * (SCENARIOS[0].step_minutes / 60.0)
 
 COLORS = ["#2196F3", "#FF5722", "#4CAF50"]
 
@@ -373,6 +385,7 @@ for col, scenario in enumerate(SCENARIOS):
     ax_price.set_ylabel("Electricity (¢/kWh)" if col == 0 else "")
     ax_price.set_xlabel("Hour of day")
     ax_price.set_ylim(0, 35)
+    ax_price.set_xticks(np.arange(0, 25, 4))
     ax_price.grid(True, alpha=0.3)
     if col == 2:
         ax_price.legend(fontsize=8, loc="upper right")
@@ -382,7 +395,7 @@ axes[0, 0].text(-0.25, 0.5, "Temperature", rotation=90, va="center",
 axes[1, 0].text(-0.25, 0.5, "Price", rotation=90, va="center",
                 transform=axes[1, 0].transAxes, fontsize=10, color="gray")
 
-plt.suptitle("Training Scenario Profiles — 24-hour horizon", fontsize=13, y=1.02)
+plt.suptitle("Training Scenario Profiles — 24-hour horizon at 5-minute resolution", fontsize=13, y=1.02)
 plt.tight_layout()
 plt.show()
 """)
@@ -395,8 +408,10 @@ md("""\
 
 ### PhysicsMultiRoomEnv
 Subclass of `IntelliWarmMultiRoomEnv` that overrides `_build_simulator()` to use
-`PhysicsRoomThermalModel` instead of the legacy first-order model.  This gives
-each room:
+`PhysicsRoomThermalModel` instead of the legacy first-order model.  The shared
+multi-room observation includes each room's **full 24-hour future occupancy
+forecast** (288 five-minute steps) in addition to current state, so PPO sees
+the same schedule-style signal that the rule-based controllers use. This gives each room:
 - Lumped thermal capacitance **C** [kJ/K] derived from heater design load.
 - Envelope + **infiltration** conductance **UA** [W/K] (ASHRAE 62.2, 0.5 ACH default).
 - Per-room **furnace power share** from `ZoneConfig` (BTU/hr × AFUE ÷ rooms).
@@ -411,8 +426,8 @@ extra_penalty = preheat_boost × occupancy_prob × max(target_min − T_room, 0)
 ```
 applied whenever `occupancy_prob > preheat_threshold` (default 0.35).
 
-This creates a stronger gradient signal for the policy to learn **early preheat**
-rather than waiting until occupancy peaks and the base-reward penalty fires.
+The wrapper also reports the added penalty back through `info`, so notebook
+reward, comfort-violation, and cost diagnostics stay aligned.
 """)
 
 code("""\
@@ -473,14 +488,14 @@ class PreheatRewardWrapper(gym.Wrapper):
     give the policy a stronger gradient for learning to preheat ahead of arrival.
 
     At each step for every active room:
-        extra_penalty += preheat_boost * occupancy_prob * max(target_min - T, 0)
+        extra_penalty += preheat_boost * effective_occ * max(target_min - T, 0)
     applied whenever occupancy_prob > preheat_threshold (default 0.35).
 
     The base energy and switching costs from IntelliWarmMultiRoomEnv are unchanged.
     \"\"\"
 
-    def __init__(self, env: gym.Env, preheat_boost: float = 8.0,
-                 preheat_threshold: float = 0.35):
+    def __init__(self, env: gym.Env, preheat_boost: float = 30.0,
+                 preheat_threshold: float = 0.05):
         super().__init__(env)
         self.preheat_boost = preheat_boost
         self.preheat_threshold = preheat_threshold
@@ -488,9 +503,9 @@ class PreheatRewardWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
-        # Room features occupy first (max_rooms * 6) elements:
-        # [temp, target_min, target_max, occupancy, last_action_power, validity]
         max_rooms = self.env.max_rooms
+        forecast_horizon = self.env.occupancy_forecast_horizon_steps
+        room_feature_block = max_rooms * 6
         extra = 0.0
         for i in range(max_rooms):
             base = i * 6
@@ -498,9 +513,20 @@ class PreheatRewardWrapper(gym.Wrapper):
                 continue
             temp       = float(obs[base + 0])
             target_min = float(obs[base + 1])
-            occ        = float(obs[base + 3])
-            if occ > self.preheat_threshold and temp < target_min:
-                extra += self.preheat_boost * occ * (target_min - temp)
+            occ_now    = float(obs[base + 3])
+            forecast_base = room_feature_block + (i * forecast_horizon)
+            next_1h_occ = float(obs[forecast_base + 0]) if forecast_horizon >= 1 else 0.0
+            next_2h_occ = float(obs[forecast_base + 1]) if forecast_horizon >= 2 else 0.0
+            effective_occ = max(occ_now, next_1h_occ, next_2h_occ)
+            if effective_occ > self.preheat_threshold and temp < target_min:
+                extra += self.preheat_boost * effective_occ * (target_min - temp)
+
+        info = dict(info)
+        info["preheat_penalty"] = extra
+        base_violation = float(info.get("comfort_violation", 0.0))
+        comfort_weight = max(float(getattr(self.env, "comfort_penalty_weight", 1.0)), 1e-6)
+        info["reported_comfort_violation"] = base_violation + (extra / comfort_weight)
+        info["wrapped_reward"] = reward - extra
 
         return obs, reward - extra, terminated, truncated, info
 
@@ -510,7 +536,7 @@ print("✅ PreheatRewardWrapper defined")
 code("""\
 # ── Create environment and explore spaces ─────────────────────────────────────
 _ENV_KWARGS = dict(
-    comfort_penalty_weight=15.0,   # strong comfort incentive
+    comfort_penalty_weight=25.0,   # strong comfort incentive
     energy_weight=1.0,
     switching_weight=0.10,         # light switching penalty
     invalid_source_penalty=2.0,    # penalise requesting furnace on electric zone
@@ -524,12 +550,13 @@ print("═" * 60)
 print("Environment spaces")
 print("═" * 60)
 print(f"  Observation: Box{_probe.observation_space.shape} float32")
-print(f"    = {_probe.env.max_rooms} rooms × 6 features")
+print(f"    = {_probe.env.max_rooms} rooms × 6 state features")
+print(f"    + {_probe.env.max_rooms} rooms × {_probe.env.occupancy_forecast_horizon_steps} occupancy-forecast features")
 print(f"    + {_probe.env.max_zones} zones × 3 features")
-print(f"    + 3 global features  (T_out, elec_price, gas_price)")
-print(f"  Action:      MultiDiscrete {list(_probe.action_space.nvec)}")
-print(f"    = {_probe.env.max_zones} zone heat-source dims  [0=ELECTRIC, 1=FURNACE]")
-print(f"    + {_probe.env.max_rooms} room heating dims       [0=OFF, 1=ECO, 2=COMFORT, 3=PREHEAT]")
+print(f"    + 7 global features  (T_out, elec, gas, hour_sin, hour_cos, next_1h_occ, next_2h_occ)")
+print(f"  Action:      Box{_probe.action_space.shape} float32")
+print(f"    = {_probe.env.max_zones} zone source signals  [0..1, >=0.5 ⇒ furnace]")
+print(f"    + {_probe.env.max_rooms} room heat demands     [0..1 continuous]")
 print()
 print(f"Initial observation (first episode, winter_workday):")
 print(f"  Scenario  : {info0['scenario_name']}")
@@ -549,17 +576,17 @@ md("""\
 We evaluate five hand-crafted baselines before training to establish cost and
 comfort-violation reference points.
 
-| Policy | Zone source | Room action | Expected behaviour |
+| Policy | Zone source | Room demand | Expected behaviour |
 |--------|------------|-------------|-------------------|
-| **Always OFF** | electric | OFF | Cheapest energy, worst comfort |
-| **ECO electric** | electric | ECO (35 %) | Low energy, modest comfort |
-| **COMFORT electric** | electric | COMFORT (70 %) | Moderate energy, good comfort |
-| **Furnace COMFORT** | furnace (where available) | COMFORT | Gas for heating, good comfort |
-| **Smart ToU** | furnace if occ rising & elec expensive | adaptive | Heuristic cost-aware |
+| **Always OFF** | electric | 0 % | Cheapest energy, worst comfort |
+| **ECO electric** | electric | 35 % constant | Low energy, modest comfort |
+| **COMFORT electric** | electric | thermostat demand | Electric-only continuous thermostat |
+| **Furnace COMFORT** | furnace (where available) | thermostat demand | Furnace zones run with shared continuous demand |
+| **Smart ToU** | adaptive hybrid | thermostat demand | Continuous cost-aware heuristic |
 """)
 
 code("""\
-def _make_eval_env(scenario: TrainingScenario, seed: int = 42):
+def _make_eval_env(scenario: TrainingScenario):
     \"\"\"Create a fresh wrapped env for a single scenario.\"\"\"
     env = PhysicsMultiRoomEnv(scenarios=[scenario], **_ENV_KWARGS)
     env = PreheatRewardWrapper(env)
@@ -577,12 +604,13 @@ def rollout(policy_fn, env, seed: int = 42):
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward    += reward
         total_cost      += info.get("total_cost", 0.0)
-        total_violation += info.get("comfort_violation", 0.0)
+        total_violation += info.get("reported_comfort_violation", info.get("comfort_violation", 0.0))
         log.append({
             "step": step_idx,
             "reward": reward,
             "total_cost": info.get("total_cost", 0.0),
-            "comfort_violation": info.get("comfort_violation", 0.0),
+            "comfort_violation": info.get("reported_comfort_violation", info.get("comfort_violation", 0.0)),
+            "preheat_penalty": info.get("preheat_penalty", 0.0),
             "electric_cost": info.get("electric_cost", 0.0),
             "gas_cost": info.get("gas_cost", 0.0),
             "zone_heat_sources": dict(info.get("zone_heat_sources", {})),
@@ -593,20 +621,17 @@ def rollout(policy_fn, env, seed: int = 42):
     return total_reward, total_cost, total_violation, log
 
 
-def eval_policy_all_scenarios(name: str, policy_fn, n_seeds: int = 3):
-    \"\"\"Evaluate policy across all 3 scenarios.\"\"\"
+def eval_policy_all_scenarios(name: str, policy_fn):
+    \"\"\"Evaluate policy once on each fixed scenario.\"\"\"
     results = {"name": name}
     for scenario in SCENARIOS:
-        rewards, costs, violations = [], [], []
-        for seed in range(n_seeds):
-            env = _make_eval_env(scenario, seed=seed)
-            r, c, v, _ = rollout(policy_fn, env, seed=seed)
-            env.close()
-            rewards.append(r); costs.append(c); violations.append(v)
+        env = _make_eval_env(scenario)
+        r, c, v, _ = rollout(policy_fn, env, seed=42)
+        env.close()
         results[scenario.name] = {
-            "reward": np.mean(rewards),
-            "cost":   np.mean(costs),
-            "violation": np.mean(violations),
+            "reward": r,
+            "cost": c,
+            "violation": v,
         }
     return results
 
@@ -615,60 +640,130 @@ print("✅ Evaluation helpers ready")
 
 code("""\
 # ── Define five baseline policies ─────────────────────────────────────────────
-# Policy signature: (obs: np.ndarray, info: dict) -> Sequence[int]
-# Action layout: [zone_src_0, zone_src_1, ..., room_0, room_1, ...]
+# Policy signature: (obs: np.ndarray, info: dict) -> Sequence[float]
+# Action layout: [zone_source_signal..., room_heat_demand...]
 
-def _action(n_zones, n_rooms, zone_src: int, room_act: int):
-    return [zone_src] * n_zones + [room_act] * n_rooms
+BASELINE_CONTROLLERS = {
+    room_name: BaselineController(
+        room_config=room_config,
+        min_temperature=18.0,
+        max_temperature=24.0,
+        preheat_lookahead_steps=2,
+    )
+    for room_name, room_config in ROOMS.items()
+}
+
+HYBRID_CONTROLLERS = {
+    zone_name: HybridController(
+        zone_config=zone_config,
+        room_configs={
+            room_name: room_config
+            for room_name, room_config in ROOMS.items()
+            if room_config.zone == zone_name
+        },
+        min_temperature=18.0,
+        max_temperature=24.0,
+        preheat_lookahead_steps=2,
+    )
+    for zone_name, zone_config in ZONES.items()
+}
+
+def _room_vector(room_demands: Dict[str, float], info: dict, fill: float = 0.0):
+    values = [float(room_demands.get(room_name, fill)) for room_name in info.get("room_names", [])]
+    values.extend([fill] * (info["max_rooms"] - len(values)))
+    return values
+
+def _active_zone_names(info: dict):
+    return list(info.get("zone_names", []))
+
+def _zone_vector(zone_signals: Dict[str, float], info: dict):
+    values = [float(zone_signals.get(zone_name, 0.0)) for zone_name in _active_zone_names(info)]
+    values.extend([0.0] * (info["max_zones"] - len(values)))
+    return values
+
+def _obs_context(obs, info):
+    max_rooms = info["max_rooms"]
+    horizon = info["occupancy_forecast_horizon_steps"]
+    room_feature_block = max_rooms * 6
+    room_context = {}
+    for idx, room_name in enumerate(info.get("room_names", [])):
+        base = idx * 6
+        forecast_base = room_feature_block + (idx * horizon)
+        occ_now = float(obs[base + 3])
+        future_occ = [float(obs[forecast_base + j]) for j in range(horizon)]
+        room_context[room_name] = {
+            "temp": float(obs[base + 0]),
+            "target_min": float(obs[base + 1]),
+            "target_max": float(obs[base + 2]),
+            "forecast": [occ_now] + future_occ,
+            "current_occ": occ_now,
+            "last_action": float(obs[base + 4]),
+            "target": 0.5 * (float(obs[base + 1]) + float(obs[base + 2])),
+        }
+
+    outside_temp = float(obs[-7])
+    electricity_price = float(obs[-6])
+    gas_price = float(obs[-5])
+    return room_context, outside_temp, electricity_price, gas_price
+
+def _baseline_room_demands(obs, info):
+    room_context, outside_temp, electricity_price, _ = _obs_context(obs, info)
+    demands = {}
+    for room_name, ctx in room_context.items():
+        decision = BASELINE_CONTROLLERS[room_name].compute_decision(
+            current_temp=ctx["temp"],
+            occupancy_forecast=ctx["forecast"],
+            energy_prices=[electricity_price],
+            current_action=ctx["last_action"],
+            outside_temp=outside_temp,
+            target_temp=ctx["target"],
+        )
+        demands[room_name] = float(decision.action)
+    return demands
 
 def policy_always_off(obs, info):
-    return _action(info["max_zones"], info["max_rooms"], 0, 0)
+    return [0.0] * (info["max_zones"] + info["max_rooms"])
 
 def policy_eco_electric(obs, info):
-    return _action(info["max_zones"], info["max_rooms"], 0, 1)
+    return [0.0] * info["max_zones"] + [0.35] * info["max_rooms"]
 
 def policy_comfort_electric(obs, info):
-    return _action(info["max_zones"], info["max_rooms"], 0, 2)
+    room_demands = _baseline_room_demands(obs, info)
+    return [0.0] * info["max_zones"] + _room_vector(room_demands, info)
 
 def policy_furnace_comfort(obs, info):
-    \"\"\"Use furnace for furnace-equipped zones, COMFORT everywhere.\"\"\"
-    max_zones = info["max_zones"]
-    max_rooms = info["max_rooms"]
-    zone_names = info.get("zone_names", [])
-    zone_has_furnace = info.get("zone_has_furnace", {})
-    zone_src = [
-        1 if zone_has_furnace.get(zone_names[i] if i < len(zone_names) else "", False) else 0
-        for i in range(max_zones)
-    ]
-    return zone_src + [2] * max_rooms  # COMFORT
+    \"\"\"Use furnace for furnace-equipped zones with continuous thermostat demand.\"\"\"
+    room_demands = _baseline_room_demands(obs, info)
+    zone_src = {
+        zone_name: 1.0 if info.get("zone_has_furnace", {}).get(zone_name, False) else 0.0
+        for zone_name in _active_zone_names(info)
+    }
+    return _zone_vector(zone_src, info) + _room_vector(room_demands, info)
 
 def policy_smart_tou(obs, info):
-    \"\"\"
-    Heuristic: use furnace when electricity is expensive (>18 ¢/kWh) AND
-    occupancy is rising; use ECO electric otherwise.
-    \"\"\"
-    max_zones = info["max_zones"]
-    max_rooms = info["max_rooms"]
-    zone_names = info.get("zone_names", [])
-    zone_has_furnace = info.get("zone_has_furnace", {})
+    \"\"\"Continuous heuristic hybrid controller using the shared zone cost logic.\"\"\"
+    room_context, outside_temp, electricity_price, gas_price = _obs_context(obs, info)
+    zone_signals = {}
+    room_demands = {}
+    for zone_name in _active_zone_names(info):
+        zone_rooms = {
+            room_name: ctx
+            for room_name, ctx in room_context.items()
+            if ROOMS[room_name].zone == zone_name
+        }
+        decision = HYBRID_CONTROLLERS[zone_name].decide(
+            room_temperatures={room_name: ctx["temp"] for room_name, ctx in zone_rooms.items()},
+            occupancy_forecasts={room_name: ctx["forecast"] for room_name, ctx in zone_rooms.items()},
+            electricity_price=electricity_price,
+            gas_price=gas_price,
+            outside_temp=outside_temp,
+            current_actions={room_name: ctx["last_action"] for room_name, ctx in zone_rooms.items()},
+            target_temps={room_name: ctx["target"] for room_name, ctx in zone_rooms.items()},
+        )
+        zone_signals[zone_name] = 1.0 if decision.heat_source == HeatSourceType.GAS_FURNACE else 0.0
+        room_demands.update(decision.per_room_actions)
 
-    # Global features sit at the end of obs: [T_out, elec_price, gas_price]
-    obs_size = len(obs)
-    elec_price = float(obs[obs_size - 2])   # second-to-last element
-
-    # Aggregate occupancy across active rooms (obs: room block, index 3 per room)
-    room_features_size = max_rooms * 6
-    occ_sum = sum(float(obs[i * 6 + 3]) for i in range(max_rooms))
-    avg_occ = occ_sum / max(1, max_rooms)
-
-    use_furnace = elec_price > 0.18 and avg_occ > 0.20
-
-    zone_src = [
-        1 if (use_furnace and zone_has_furnace.get(zone_names[i] if i < len(zone_names) else "", False)) else 0
-        for i in range(max_zones)
-    ]
-    room_act = 2 if avg_occ > 0.15 else 1   # COMFORT if any occupancy, else ECO
-    return zone_src + [room_act] * max_rooms
+    return _zone_vector(zone_signals, info) + _room_vector(room_demands, info)
 
 BASELINE_POLICIES = {
     "always_off":        policy_always_off,
@@ -683,10 +778,10 @@ print(f"Defined {len(BASELINE_POLICIES)} baseline policies")
 
 code("""\
 # ── Evaluate all baselines ────────────────────────────────────────────────────
-print("Evaluating baselines (3 seeds × 3 scenarios each) …")
+print("Evaluating baselines (1 deterministic rollout × 3 scenarios each) …")
 baseline_results = {}
 for pol_name, pol_fn in BASELINE_POLICIES.items():
-    baseline_results[pol_name] = eval_policy_all_scenarios(pol_name, pol_fn, n_seeds=3)
+    baseline_results[pol_name] = eval_policy_all_scenarios(pol_name, pol_fn)
     r_avg = np.mean([baseline_results[pol_name][s.name]["reward"] for s in SCENARIOS])
     c_avg = np.mean([baseline_results[pol_name][s.name]["cost"] for s in SCENARIOS])
     v_avg = np.mean([baseline_results[pol_name][s.name]["violation"] for s in SCENARIOS])
@@ -718,7 +813,7 @@ for col, metric in enumerate(["reward", "cost", "violation"]):
     if col == 0:
         ax.legend(fontsize=9, loc="lower right")
 
-plt.suptitle("Baseline Policy Comparison — averaged over 3 seeds × 3 scenarios", fontsize=12)
+plt.suptitle("Baseline Policy Comparison — deterministic rollouts over 3 scenarios", fontsize=12)
 plt.tight_layout()
 plt.show()
 
@@ -746,17 +841,19 @@ Stable-Baselines3 with 4 parallel environment workers.
 
 | Param | Value | Rationale |
 |-------|-------|-----------|
-| `n_steps` | 1 024 | Enough steps per rollout to cover ~42 full episodes |
+| `n_steps` | 1 152 | Exactly four 24-hour episodes per environment rollout |
 | `batch_size` | 256 | Mini-batches from the collected rollout |
 | `n_epochs` | 10 | Re-use rollout data for 10 gradient updates |
-| `gamma` | 0.99 | Long planning horizon (24-step episode × 3 scenarios) |
+| `gamma` | 0.999 | Long planning horizon with 5-minute control intervals |
 | `ent_coef` | 0.02 | Encourages action diversity early; decays with entropy |
 | `learning_rate` | 3e-4 | Standard Adam LR for PPO |
 
 ### Training environment
-- `PhysicsMultiRoomEnv` with `PreheatRewardWrapper(preheat_boost=8)`.
+- `PhysicsMultiRoomEnv` with `PreheatRewardWrapper(preheat_boost=30, preheat_threshold=0.05)`.
 - Scenarios cycle round-robin across the 4 parallel workers.
-- Each episode lasts exactly **24 steps** (one simulated day).
+- Each episode lasts exactly **288 steps** (one simulated day at 5-minute resolution).
+- PPO outputs **continuous** room heat demands in `[0, 1]` plus continuous zone-source
+  signals where `>= 0.5` requests the furnace.
 
 ### What OPT should learn
 1. **Gas furnace during cold peaks** — furnace is cheaper than running all room heaters.
@@ -767,13 +864,13 @@ Stable-Baselines3 with 4 parallel environment workers.
 
 code("""\
 N_ENVS = 4
-TOTAL_TIMESTEPS = 200_000   # ~8 333 episodes per worker; change to 500_000 for deeper training
+TOTAL_TIMESTEPS = 100_000
 
 def _make_train_env(seed: int = 0):
     \"\"\"Factory for one training environment instance (cycles all scenarios).\"\"\"
     def _init():
         env = PhysicsMultiRoomEnv(scenarios=SCENARIOS, **_ENV_KWARGS)
-        env = PreheatRewardWrapper(env, preheat_boost=8.0, preheat_threshold=0.35)
+        env = PreheatRewardWrapper(env, preheat_boost=30.0, preheat_threshold=0.05)
         env.reset(seed=seed)
         return env
     return _init
@@ -782,7 +879,7 @@ vec_env = DummyVecEnv([_make_train_env(seed=i) for i in range(N_ENVS)])
 
 print(f"VecEnv: {N_ENVS} parallel environments")
 print(f"  obs_space : {vec_env.observation_space.shape}")
-print(f"  act_space : MultiDiscrete {list(vec_env.action_space.nvec)}")
+print(f"  act_space : Box{vec_env.action_space.shape}")
 """)
 
 code("""\
@@ -807,7 +904,7 @@ class TrainingLogger(BaseCallback):
         for i in range(N_ENVS):
             self._ep_reward[i]    += float(rewards[i])
             self._ep_cost[i]      += float(infos[i].get("total_cost", 0.0))
-            self._ep_violation[i] += float(infos[i].get("comfort_violation", 0.0))
+            self._ep_violation[i] += float(infos[i].get("reported_comfort_violation", infos[i].get("comfort_violation", 0.0)))
             if dones[i]:
                 self.ep_rewards.append(self._ep_reward[i])
                 self.ep_costs.append(self._ep_cost[i])
@@ -818,22 +915,34 @@ class TrainingLogger(BaseCallback):
 logger = TrainingLogger()
 
 # ── PPO model ────────────────────────────────────────────────────────────────
+import torch
+
+if torch.cuda.is_available():
+    device = "cuda"
+    device_label = f"cuda ({torch.cuda.get_device_name(0)})"
+else:
+    device = "cpu"
+    device_label = "cpu"
+    print("Warning: CUDA not available, falling back to CPU training.")
+
 model = PPO(
     "MlpPolicy",
     vec_env,
     verbose=0,
-    n_steps=1024,
+    n_steps=1152,
     batch_size=256,
     n_epochs=10,
     learning_rate=3e-4,
-    gamma=0.99,
+    gamma=0.999,
     gae_lambda=0.95,
     ent_coef=0.02,
     clip_range=0.20,
     policy_kwargs=dict(net_arch=[128, 128]),   # two hidden layers
     seed=42,
+    device=device,
 )
 
+print(f"Using PPO device: {device_label}")
 print(f"PPO model ready — {sum(p.numel() for p in model.policy.parameters()):,} parameters")
 print(f"Training for {TOTAL_TIMESTEPS:,} timesteps across {N_ENVS} envs …")
 """)
@@ -872,7 +981,7 @@ ep_idx = np.arange(len(logger.ep_rewards))
 METRICS = [
     (logger.ep_rewards,    "Episode Reward (↑ better)",          "#1565C0"),
     (logger.ep_costs,      "Episode Energy Cost $ (↓ better)",   "#AD1457"),
-    (logger.ep_violations, "Comfort Violation (↓ better)",        "#2E7D32"),
+    (logger.ep_violations, "Reported Comfort Violation (↓ better)", "#2E7D32"),
 ]
 
 for ax, (data, title, color) in zip(axes, METRICS):
@@ -911,13 +1020,13 @@ def policy_trained_opt(obs: np.ndarray, info: dict) -> list:
 
 # ── Evaluate ──────────────────────────────────────────────────────────────────
 print("Evaluating trained OPT policy …")
-trained_results = eval_policy_all_scenarios("trained_opt", policy_trained_opt, n_seeds=5)
+trained_results = eval_policy_all_scenarios("trained_opt", policy_trained_opt)
 
 all_results = dict(baseline_results)
 all_results["trained_opt"] = trained_results
 
 # Print comparison table
-print("\\n─── Final policy comparison (mean over seeds × scenarios) ───")
+print("\\n─── Final policy comparison (mean over scenarios) ───")
 print(f"{'Policy':22s}  {'Reward':>10}  {'Cost $':>10}  {'Violation':>10}")
 print("─" * 60)
 all_names = list(BASELINE_POLICIES.keys()) + ["trained_opt"]
@@ -970,9 +1079,9 @@ md("""\
 We roll out the trained policy on the **winter_workday** scenario (hardest case) and
 visualise:
 1. **Room temperatures** vs target bands over 24 hours.
-2. **Heating actions** per room (heatmap).
-3. **Zone heat-source choices** (furnace vs electric, hour by hour).
-4. **Hourly cost breakdown** (electric vs gas).
+2. **Continuous heating demand** per room.
+3. **Zone heat-source choices** (furnace vs electric, across the day).
+4. **Per-step cost breakdown** (electric vs gas).
 """)
 
 code("""\
@@ -995,7 +1104,7 @@ def full_rollout(policy_fn, scenario_name: str, seed: int = 0):
     step_costs_elec = []
     step_costs_gas  = []
     step_violations = []
-    hours = list(range(target.horizon_steps))
+    elapsed_hours = np.arange(target.horizon_steps) * (target.step_minutes / 60.0)
 
     while True:
         act = policy_fn(obs, info)
@@ -1013,7 +1122,7 @@ def full_rollout(policy_fn, scenario_name: str, seed: int = 0):
 
         step_costs_elec.append(info.get("electric_cost", 0.0))
         step_costs_gas.append(info.get("gas_cost", 0.0))
-        step_violations.append(info.get("comfort_violation", 0.0))
+        step_violations.append(info.get("reported_comfort_violation", info.get("comfort_violation", 0.0)))
 
         if terminated or truncated:
             break
@@ -1022,9 +1131,10 @@ def full_rollout(policy_fn, scenario_name: str, seed: int = 0):
     return {
         "room_names": room_names_sorted,
         "zone_names": zone_names_sorted,
-        "temps": temps,          # dict room→list[float] (25 values: t0 + 24 steps)
-        "actions": actions,      # dict room→list[float] (24 values)
-        "sources": sources,      # dict zone→list[int]   (24 values)
+        "temps": temps,          # dict room→list[float] (t0 + horizon_steps values)
+        "actions": actions,      # dict room→list[float] (horizon_steps values)
+        "sources": sources,      # dict zone→list[int]   (horizon_steps values)
+        "elapsed_hours": elapsed_hours,
         "elec_cost": step_costs_elec,
         "gas_cost":  step_costs_gas,
         "violations": step_violations,
@@ -1048,10 +1158,11 @@ def plot_temperatures(data: dict, title: str, scenario=winter_workday, ax_array=
         axes = ax_array
         fig = None
 
-    hours_temp = np.arange(scenario.horizon_steps + 1)  # 0 … 24
-    hours_act  = np.arange(1, scenario.horizon_steps + 1)  # 1 … 24
+    step_hours = scenario.step_minutes / 60.0
+    hours_temp = np.arange(scenario.horizon_steps + 1) * step_hours
+    hours_act  = np.arange(scenario.horizon_steps) * step_hours
 
-    ACTION_CMAP = {0.00: "#B0BEC5", 0.35: "#90CAF9", 0.70: "#42A5F5", 1.00: "#1565C0"}
+    action_cmap = plt.cm.Blues
 
     for ax, room in zip(axes, room_names):
         temps_r = data["temps"][room]
@@ -1061,10 +1172,11 @@ def plot_temperatures(data: dict, title: str, scenario=winter_workday, ax_array=
         # Shade occupancy periods
         occ_predictor = OccupancyPredictor(room, rc.occupancy_schedule)
         for h in range(scenario.horizon_steps):
-            ts = scenario.start_time + timedelta(hours=h)
+            ts = scenario.start_time + timedelta(minutes=scenario.step_minutes * h)
             occ = occ_predictor.predict(ts)
             if occ > 0.3:
-                ax.axvspan(h, h + 1, alpha=0.08 + 0.10 * occ, color="#FF9800", lw=0)
+                x0 = h * step_hours
+                ax.axvspan(x0, x0 + step_hours, alpha=0.08 + 0.10 * occ, color="#FF9800", lw=0)
 
         # Comfort band
         ax.axhspan(rc.target_min_temp, rc.target_max_temp, alpha=0.12, color="green", label="Comfort band")
@@ -1074,10 +1186,11 @@ def plot_temperatures(data: dict, title: str, scenario=winter_workday, ax_array=
         # Temperature trace
         ax.plot(hours_temp, temps_r, lw=2, color="#1565C0", label="Room temp")
 
-        # Action power bars (secondary y-axis style: hatched bars)
+        # Continuous action power bars
         for h, act in enumerate(acts_r):
-            col = ACTION_CMAP.get(round(act, 2), "#B0BEC5")
-            ax.axvspan(h, h + 1, ymin=0, ymax=0.05, color=col, alpha=0.9)
+            col = action_cmap(0.20 + 0.75 * act)
+            x0 = h * step_hours
+            ax.axvspan(x0, x0 + step_hours, ymin=0, ymax=0.05, color=col, alpha=0.95)
 
         ax.set_ylabel(f"{rc.display_name}\\n(°C)", fontsize=9)
         ax.set_ylim(min(temps_r) - 1.5, max(temps_r) + 2.5)
@@ -1085,13 +1198,13 @@ def plot_temperatures(data: dict, title: str, scenario=winter_workday, ax_array=
 
     axes[0].set_title(title, fontsize=11, fontweight="bold")
     axes[-1].set_xlabel("Hour of day")
-    axes[-1].set_xticks(range(0, 25, 2))
+    axes[-1].set_xticks(np.arange(0, 25, 2))
 
     legend_patches = [
-        mpatches.Patch(color="#B0BEC5", label="OFF"),
-        mpatches.Patch(color="#90CAF9", label="ECO (35%)"),
-        mpatches.Patch(color="#42A5F5", label="COMFORT (70%)"),
-        mpatches.Patch(color="#1565C0", label="PREHEAT (100%)"),
+        mpatches.Patch(color=action_cmap(0.20), label="0% demand"),
+        mpatches.Patch(color=action_cmap(0.45), label="~35% demand"),
+        mpatches.Patch(color=action_cmap(0.72), label="~70% demand"),
+        mpatches.Patch(color=action_cmap(0.95), label="100% demand"),
         mpatches.Patch(color="#FF9800", alpha=0.5, label="Occupancy window"),
     ]
     axes[-1].legend(handles=legend_patches, ncol=5, fontsize=8, loc="lower right")
@@ -1108,40 +1221,41 @@ code("""\
 # ── Figure 2: Zone heat-source choices & cost breakdown ──────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(14, 7))
 
-hours = list(range(1, 25))
+step_hours = winter_workday.step_minutes / 60.0
+hours = np.arange(winter_workday.horizon_steps) * step_hours
 
 # ── Top left: OPT zone sources ────────────────────────────────────────────────
 ax = axes[0, 0]
 zone_colors = {"Main": "#1565C0", "Sleeping": "#AD1457", "Office": "#2E7D32"}
 for z in rollout_opt["zone_names"]:
     src = rollout_opt["sources"][z]
-    ax.step(hours, src, where="mid", label=f"{z} ({'furnace' if max(src) else 'electric'})",
+    ax.step(hours, src, where="post", label=f"{z} ({'furnace' if max(src) else 'electric'})",
             color=zone_colors.get(z, "gray"), lw=2)
 ax.set_yticks([0, 1])
 ax.set_yticklabels(["Electric", "Furnace"])
 ax.set_title("OPT — Zone heat-source choice", fontweight="bold")
-ax.set_xlabel("Hour of day"); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+ax.set_xlabel("Hour of day"); ax.set_xticks(np.arange(0, 25, 4)); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
 
 # ── Top right: Baseline zone sources ─────────────────────────────────────────
 ax = axes[0, 1]
 for z in rollout_base["zone_names"]:
     src = rollout_base["sources"][z]
-    ax.step(hours, src, where="mid", label=z, color=zone_colors.get(z, "gray"), lw=2)
+    ax.step(hours, src, where="post", label=z, color=zone_colors.get(z, "gray"), lw=2)
 ax.set_yticks([0, 1])
 ax.set_yticklabels(["Electric", "Furnace"])
 ax.set_title("COMFORT-electric — Zone heat-source choice", fontweight="bold")
-ax.set_xlabel("Hour of day"); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+ax.set_xlabel("Hour of day"); ax.set_xticks(np.arange(0, 25, 4)); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
 
 # ── Bottom left: Cost breakdown OPT ──────────────────────────────────────────
 ax = axes[1, 0]
-ax.bar(hours, rollout_opt["elec_cost"], color="#42A5F5", alpha=0.85, label="Electric")
+ax.bar(hours, rollout_opt["elec_cost"], width=step_hours, color="#42A5F5", alpha=0.85, label="Electric")
 ax.bar(hours, rollout_opt["gas_cost"],  bottom=rollout_opt["elec_cost"],
-       color="#FF7043", alpha=0.85, label="Gas")
+       width=step_hours, color="#FF7043", alpha=0.85, label="Gas")
 ax2 = ax.twinx()
 ax2.plot(hours, winter_workday.electricity_prices, color="black", lw=1.5, ls=":", label="Elec price")
 ax2.set_ylabel("Elec price ($/kWh)", fontsize=9)
-ax.set_title("OPT — Hourly cost breakdown", fontweight="bold")
-ax.set_xlabel("Hour of day"); ax.set_ylabel("Cost ($)"); ax.legend(fontsize=9)
+ax.set_title("OPT — 5-minute cost breakdown", fontweight="bold")
+ax.set_xlabel("Hour of day"); ax.set_ylabel("Cost ($)"); ax.set_xticks(np.arange(0, 25, 4)); ax.legend(fontsize=9)
 ax.grid(True, alpha=0.3)
 
 # ── Bottom right: Comfort violations ─────────────────────────────────────────
@@ -1150,7 +1264,8 @@ x = np.arange(len(hours))
 w = 0.35
 ax.bar(x - w/2, rollout_opt["violations"],  w, label="OPT",  color="#1565C0", alpha=0.8)
 ax.bar(x + w/2, rollout_base["violations"], w, label="COMFORT-electric", color="#FF5722", alpha=0.8)
-ax.set_xticks(x); ax.set_xticklabels(hours)
+tick_idx = np.arange(0, len(hours), 12)
+ax.set_xticks(tick_idx); ax.set_xticklabels([f"{hours[i]:.0f}" for i in tick_idx])
 ax.set_title("Comfort violations — OPT vs baseline", fontweight="bold")
 ax.set_xlabel("Hour of day"); ax.set_ylabel("Violation (°C · occupancy)")
 ax.legend(fontsize=9); ax.grid(True, axis="y", alpha=0.3)
@@ -1199,15 +1314,15 @@ md("""\
 
 ### What was trained
 A **PPO policy** for a 3-zone, 5-room family house that jointly decides:
-- **Zone heat source** (gas furnace vs electric, per zone, per hour)
-- **Room heating mode** (OFF / ECO / COMFORT / PREHEAT, per room, per hour)
+- **Zone heat source** (gas furnace vs electric, per zone, every 5 minutes)
+- **Room heating demand** (continuous 0–100 %, per room, every 5 minutes)
 
 ### Reward design
 | Component | Weight | Effect |
 |-----------|--------|--------|
 | Energy cost (electric + gas) | 1.0 | Agent minimises energy spend |
-| Comfort violation (occ × ΔT) | 15.0 | Penalises cold rooms during occupancy |
-| Pre-occupancy penalty (wrapper) | 8.0 / °C | Extra signal to preheat *before* arrival |
+| Comfort violation (occ × ΔT) | 25.0 | Penalises cold rooms during occupancy |
+| Pre-occupancy penalty (wrapper) | 30.0 / °C | Extra signal to preheat *before* arrival |
 | Switching penalty | 0.1 | Smooth action transitions |
 
 ### Key learned behaviours (typical)
@@ -1217,7 +1332,7 @@ A **PPO policy** for a 3-zone, 5-room family house that jointly decides:
 - On spring days, often prefers electric over furnace when outdoor temps are mild.
 
 ### Next steps
-1. **Longer training** — increase `TOTAL_TIMESTEPS` to 1 000 000 for better convergence.
+1. **Longer training** — increase `TOTAL_TIMESTEPS` only if the learning curves still improve beyond 100k.
 2. **VecNormalize** — wrap the VecEnv with `VecNormalize` for observation/reward normalisation.
 3. **Live price integration** — replace synthetic price profiles with real time-of-use tariffs.
 4. **Hardware deployment** — feed the trained policy into `IntelliWarmRuntime` as a controller type.

@@ -11,13 +11,13 @@ The key cost-saving mechanism is `HybridController` in `intelliwarm/control/hybr
 > *Is it cheaper right now to run the gas furnace for the whole zone, or let each room run its own electric heater?*
 
 ```
-electric_cost  = Σ (heater_kW × action.power_level × electricity_$/kWh)  per room needing heat
-furnace_cost   = (furnace_btu_per_hour / 100_000) / efficiency × gas_$/therm
+electric_cost  = Σ (heater_kW × room_demand × electricity_$/kWh)  per room needing heat
+furnace_cost   = zone_demand × zone.hourly_gas_cost(gas_$/therm)
 
 if zone.has_furnace and furnace_cost < electric_cost:
-	→ activate furnace at the highest demanded action level for the whole zone
+	→ activate furnace at the highest demanded normalized output for the whole zone
 else:
-	→ each room runs its electric heater at its individual baseline action level
+	→ each room runs its electric heater at its individual baseline demand
 ```
 
 The furnace heats an entire zone uniformly and is economical when many rooms need heat simultaneously. Electric heaters allow per-room precision and are cheaper when only one or two rooms need heat. The controller automatically switches based on real prices.
@@ -30,7 +30,7 @@ The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can
 
 - **Hybrid heating cost engine** — `intelliwarm/control/hybrid_controller.py` ← primary cost saver
 - `HeatSourceType`, `ZoneConfig`, `HybridHeatingDecision` domain types in `intelliwarm/data/models.py`
-- Explainable baseline controller (`OFF`, `ECO`, `COMFORT`, `PREHEAT`) driving per-room needs
+- Explainable baseline controller producing continuous per-room thermostat demand (`0.0` to `1.0`) with legacy action labels for reporting
 - Aligned forecast bundle service — occupancy, weather, and pricing share one horizon contract
 - Runtime orchestration with safety overrides and recent-event observability
 - Hardware-ready sensor and actuator backends with simulation fallback
@@ -40,8 +40,9 @@ The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can
 - Dashboard/runtime view models exposing active heat source, requested mode, applied mode, cost, and rationale
 - Zone furnace actuation through `DeviceController`, with room electric heaters forced off when gas heat is selected
 - Pricing provider boundary (`TimeOfUsePriceProvider`, `StaticPriceProvider`, `CallbackPriceProvider`) with offline-safe fallback forecasts
-- Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using the same `OFF`/`ECO`/`COMFORT`/`PREHEAT` action contract
+- Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using continuous zone-source signals and per-room heat demand
 - Multi-room, multi-zone Gym-compatible training environment plus deterministic synthetic scenario generation for varied schedules and conditions
+- Multi-room observations include per-room occupancy forecast horizons so learned policies can plan against future schedule information
 - Deterministic policy-evaluation helpers for rolling learned or heuristic controllers across the scenario library
 - Built-in policy catalog and `scripts/evaluate_policies.py` for quick scenario-batch comparisons
 - 50+ regression tests across all modules
@@ -84,7 +85,7 @@ IntelliWarm/
 - `intelliwarm/services/runtime.py`: application orchestration, zone-aware hybrid decisions, and dashboard/runtime state
 - `intelliwarm/core/config.py`: typed config loading for YAML plus `INTELLIWARM_*` environment overrides
 - `intelliwarm/control/hybrid_controller.py`: **zone-level hybrid heating cost engine** — the primary actuator decision point
-- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based baseline (`OFF`/`ECO`/`COMFORT`/`PREHEAT`)
+- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based baseline with continuous thermostat-style demand
 - `intelliwarm/models/thermal_model.py`: room thermal dynamics
 - `intelliwarm/models/simulator.py`: deterministic multi-room simulation
 - `intelliwarm/prediction/occupancy_model.py`: schedule and timestamp-based occupancy prediction
@@ -180,7 +181,7 @@ pytest tests/
 | Component | Technology |
 |-----------|-----------|
 | Backend | Python 3.9+, Flask |
-| ML/Optimization | NumPy, SciPy, scikit-learn |
+| ML/Optimization | NumPy, SciPy, scikit-learn, Gymnasium, Stable-Baselines3 |
 | Database | SQLite |
 | Configuration | YAML |
 | Frontend | HTML/CSS/JavaScript (Plotly) |

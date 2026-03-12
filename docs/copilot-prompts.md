@@ -4,7 +4,7 @@ Use these prompts for bounded implementation slices.
 
 ## 1. Baseline Controller
 
-> Implement a baseline HVAC controller for IntelliWarm using the existing `HeatingAction` enum in `intelliwarm/data/models.py`. Keep the logic deterministic, occupancy-aware, and valid for both simulation and live execution contracts. Add explanation outputs, add tests, and do not change the Flask UI yet.
+> Implement a baseline HVAC controller for IntelliWarm using the shared normalized-demand contract in `intelliwarm/data/models.py`, while preserving compatibility labels derived from `HeatingAction` for reporting. Keep the logic deterministic, occupancy-aware, and valid for both simulation and live execution contracts. Add explanation outputs, add tests, and do not change the Flask UI yet.
 
 ## 2. Forecast Bundle Service
 
@@ -28,4 +28,4 @@ Use these prompts for bounded implementation slices.
 
 ## 7. MPC Evolution
 
-> Evolve the existing MPC implementation in IntelliWarm toward discrete, explainable actions while preserving the current optimizer module. Reuse `HeatingAction`, add rollout scoring, ensure compatibility with live adapter contracts, and compare output against the baseline controller in tests.
+> Evolve the existing MPC implementation in IntelliWarm toward continuous, explainable normalized-demand control while preserving the current optimizer module. Reuse compatibility labels from `HeatingAction` where useful for reporting, add rollout scoring, ensure compatibility with live adapter contracts, and compare output against the baseline controller in tests.

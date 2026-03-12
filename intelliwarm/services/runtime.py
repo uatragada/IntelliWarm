@@ -10,7 +10,15 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from intelliwarm.control import BaselineController, HybridController
-from intelliwarm.data import ForecastBundle, HeatingAction, HybridHeatingDecision, RoomConfig, ZoneConfig
+from intelliwarm.data import (
+    action_name_for_power_level,
+    clamp_power_level,
+    ForecastBundle,
+    HeatingAction,
+    HybridHeatingDecision,
+    RoomConfig,
+    ZoneConfig,
+)
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.optimizer import CostFunction, MPCController
 from intelliwarm.prediction import OccupancyPredictor
@@ -528,11 +536,11 @@ class IntelliWarmRuntime:
         plan: Dict[str, Any],
     ) -> Dict[str, Any]:
         adjusted_plan = dict(plan)
-        proposed_action = HeatingAction.from_value(adjusted_plan["next_action"])
+        proposed_action = clamp_power_level(adjusted_plan["next_action"])
 
         if current_temp >= self.config.max_temperature:
-            adjusted_plan["next_action"] = HeatingAction.OFF.power_level
-            adjusted_plan["next_action_label"] = HeatingAction.OFF.name
+            adjusted_plan["next_action"] = 0.0
+            adjusted_plan["next_action_label"] = action_name_for_power_level(0.0)
             adjusted_plan["safety_override"] = "overheat_protection"
             self._record_runtime_event(
                 event_type="safety_override",
@@ -548,17 +556,17 @@ class IntelliWarmRuntime:
 
         if (
             current_temp <= self.config.min_temperature - 1.0
-            and proposed_action == HeatingAction.OFF
+            and proposed_action <= 0.05
             and not adjusted_plan.get("furnace_on", False)
         ):
-            adjusted_plan["next_action"] = HeatingAction.ECO.power_level
-            adjusted_plan["next_action_label"] = HeatingAction.ECO.name
+            adjusted_plan["next_action"] = max(proposed_action, 0.25)
+            adjusted_plan["next_action_label"] = action_name_for_power_level(adjusted_plan["next_action"])
             adjusted_plan["safety_override"] = "freeze_protection"
             self._record_runtime_event(
                 event_type="safety_override",
                 severity="warning",
                 room_name=room_name,
-                message="Freeze protection raised heater output to ECO.",
+                message="Freeze protection raised heater output to a low continuous demand.",
                 details={
                     "current_temp": current_temp,
                     "min_temperature": self.config.min_temperature,
@@ -641,20 +649,20 @@ class IntelliWarmRuntime:
         forecast_bundle: ForecastBundle,
         current_temp: float,
     ) -> Dict[str, Any]:
-        requested_action = hybrid_decision.per_room_actions[room_name]
-        applied_action = HeatingAction.OFF if hybrid_decision.furnace_on else requested_action
+        requested_action = clamp_power_level(hybrid_decision.per_room_actions[room_name])
+        applied_action = 0.0 if hybrid_decision.furnace_on else requested_action
         plan = {
             "room": room_name,
             "controller": "hybrid",
             "zone": hybrid_decision.zone,
-            "next_action": applied_action.power_level,
-            "next_action_label": applied_action.name,
-            "hybrid_action": requested_action.power_level,
-            "hybrid_action_label": requested_action.name,
+            "next_action": applied_action,
+            "next_action_label": action_name_for_power_level(applied_action),
+            "hybrid_action": requested_action,
+            "hybrid_action_label": action_name_for_power_level(requested_action),
             "furnace_on": hybrid_decision.furnace_on,
             "heat_source": hybrid_decision.heat_source.value,
             "total_cost": hybrid_decision.chosen_hourly_cost,
-            "optimal_actions": [applied_action.power_level] * len(forecast_bundle.steps),
+            "optimal_actions": [applied_action] * len(forecast_bundle.steps),
             "predicted_temperatures": [current_temp],
             "horizon": len(forecast_bundle.steps),
             "forecast_bundle": forecast_bundle.to_dict(),
@@ -666,7 +674,7 @@ class IntelliWarmRuntime:
         if hybrid_decision.furnace_on:
             plan["explanation"] = (
                 "Hybrid controller selected the zone furnace; per-room electric heaters were "
-                "suppressed while the zone furnace actuator was enabled."
+                f"suppressed while the zone furnace actuator was enabled at {requested_action:.2f} demand."
             )
         else:
             plan["explanation"] = hybrid_decision.rationale
@@ -759,7 +767,7 @@ class IntelliWarmRuntime:
                 if plan.get("controller") == "hybrid":
                     controller_type = "hybrid"
                 plan.setdefault("controller", controller_type)
-                plan.setdefault("next_action_label", HeatingAction.from_value(plan["next_action"]).name)
+                plan.setdefault("next_action_label", action_name_for_power_level(plan["next_action"]))
                 plan = self._apply_safety_constraints(room_name, current_temp, plan)
                 self._apply_device_plan(room_name, plan)
                 self.database.record_optimization(

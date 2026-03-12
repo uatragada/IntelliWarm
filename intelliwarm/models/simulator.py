@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from intelliwarm.data import HeatingAction, HeatSourceType, RoomConfig, SimulationState
+from intelliwarm.data import clamp_power_level, HeatSourceType, SimulationState
 from intelliwarm.models.thermal_model import sol_rad_tilt_wm2, solar_irradiance_wm2
 from intelliwarm.prediction import OccupancyPredictor
 
@@ -53,8 +53,8 @@ class HouseSimulator:
         self.cloud_cover = cloud_cover
         self.albedo = albedo
 
-    def _resolve_action(self, action: object) -> HeatingAction:
-        return HeatingAction.from_value(action)
+    def _resolve_action(self, action: object) -> float:
+        return clamp_power_level(action)
 
     def _occupancy_for_timestamp(self, room_name: str, timestamp: datetime) -> float:
         predictor = self.occupancy_predictors.get(room_name)
@@ -81,11 +81,11 @@ class HouseSimulator:
         """Advance the simulation by one step."""
         resolved_timestamp = next_timestamp or (state.timestamp + timedelta(minutes=dt_minutes))
         next_temperatures: Dict[str, float] = {}
-        resolved_actions: Dict[str, HeatingAction] = {}
+        resolved_actions: Dict[str, float] = {}
 
         for room_name, current_temp in state.room_temperatures.items():
-            action = self._resolve_action(heating_actions.get(room_name, HeatingAction.OFF))
-            resolved_actions[room_name] = action
+            power_level = self._resolve_action(heating_actions.get(room_name, 0.0))
+            resolved_actions[room_name] = power_level
             occupancy_val = self._occupancy_for_timestamp(room_name, resolved_timestamp)
 
             # Per-room solar irradiance: use tilted surface model when the
@@ -114,9 +114,9 @@ class HouseSimulator:
             heat_source = state.heat_sources.get(room_name, HeatSourceType.ELECTRIC)
             if heat_source is HeatSourceType.GAS_FURNACE:
                 electric_frac = 0.0
-                furnace_frac = action.power_level
+                furnace_frac = power_level
             else:
-                electric_frac = action.power_level
+                electric_frac = power_level
                 furnace_frac = 0.0
 
             next_temperatures[room_name] = model.step(
@@ -140,6 +140,7 @@ class HouseSimulator:
             room_temperatures=next_temperatures,
             heating_actions=resolved_actions,
             occupancy=next_occupancy,
+            heat_sources=dict(state.heat_sources),
         )
 
     def simulate(
@@ -149,22 +150,37 @@ class HouseSimulator:
         outdoor_temperatures: List[float],
         heating_plan: List[Dict[str, object]],
         dt_minutes: int = 60,
+        initial_heat_sources: Optional[Dict[str, HeatSourceType]] = None,
+        heat_source_plan: Optional[List[Dict[str, HeatSourceType]]] = None,
     ) -> List[SimulationState]:
         """Run a deterministic multi-room simulation over a planning horizon."""
         if len(outdoor_temperatures) != len(heating_plan):
             raise ValueError("Outdoor temperatures and heating plan must have the same length")
+        if heat_source_plan is not None and len(heat_source_plan) != len(heating_plan):
+            raise ValueError("heat_source_plan must have the same length as heating_plan")
 
         initial_occupancy = {
             room_name: self._occupancy_for_timestamp(room_name, start_time)
             for room_name in initial_temperatures
         }
+        default_heat_sources = {
+            room_name: (
+                self.room_configs[room_name].heat_source
+                if room_name in self.room_configs
+                else HeatSourceType.ELECTRIC
+            )
+            for room_name in initial_temperatures
+        }
+        if initial_heat_sources:
+            default_heat_sources.update(dict(initial_heat_sources))
         states = [
             SimulationState(
                 timestamp=start_time,
                 outdoor_temp=outdoor_temperatures[0] if outdoor_temperatures else 0.0,
                 room_temperatures=dict(initial_temperatures),
-                heating_actions={room_name: HeatingAction.OFF for room_name in initial_temperatures},
+                heating_actions={room_name: 0.0 for room_name in initial_temperatures},
                 occupancy=initial_occupancy,
+                heat_sources=default_heat_sources,
             )
         ]
 
@@ -173,10 +189,13 @@ class HouseSimulator:
             current_state = SimulationState(
                 timestamp=current_state.timestamp,
                 outdoor_temp=outdoor_temperatures[step_index],
-                room_temperatures=current_state.room_temperatures,
-                heating_actions=current_state.heating_actions,
-                occupancy=current_state.occupancy,
+                room_temperatures=dict(current_state.room_temperatures),
+                heating_actions=dict(current_state.heating_actions),
+                occupancy=dict(current_state.occupancy),
+                heat_sources=dict(current_state.heat_sources),
             )
+            if heat_source_plan is not None:
+                current_state.heat_sources.update(dict(heat_source_plan[step_index]))
             next_state = self.step(
                 current_state,
                 planned_actions,

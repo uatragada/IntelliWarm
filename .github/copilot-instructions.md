@@ -6,7 +6,7 @@ Use these instructions for GitHub Copilot CLI autopilot and chat-based implement
 
 IntelliWarm is a real-world HVAC cost minimization platform for homes and buildings with hybrid heating systems — a gas furnace that heats entire zones and electric space heaters that heat individual rooms. The platform decides in real time which source is cheaper, controls the appropriate hardware, and records the cost outcome.
 
-Simulation is a required capability for deterministic validation and offline development. Every feature must run in both simulation mode and live hardware mode using shared action and forecast contracts.
+Simulation is a required capability for deterministic validation and offline development. Every feature must run in both simulation mode and live hardware mode using shared normalized-demand action and forecast contracts.
 
 **The central cost-saving mechanism is `HybridController` in `intelliwarm/control/hybrid_controller.py`. All new zone heating work must route through it.**
 
@@ -41,7 +41,7 @@ Simulation is a required capability for deterministic validation and offline dev
 - Reuse existing modules before creating new ones.
 - **Zone heating decisions must go through `HybridController.decide()` — do not call `BaselineController` directly from services or routes.**
 - Baseline generates per-room heat needs as inputs to `HybridController`; it is not a standalone zone controller.
-- MPC and baseline should converge on shared `HybridHeatingDecision` and `ForecastBundle` contracts.
+- MPC and baseline should converge on shared normalized-demand, `HybridHeatingDecision`, and `ForecastBundle` contracts.
 - Dashboard logic should consume service outputs, not internal model details.
 - Hardware-specific code should remain in adapter/integration boundaries, not optimizer internals.
 - Storage changes should remain compatible with the current SQLite workflow unless migration is explicitly requested.
@@ -60,12 +60,11 @@ pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules
 
 ## Priority Order
 
-1. **Wire `HybridController` into `IntelliWarmRuntime.optimize_heating_plan()` — make the cost savings real in the running system.**
-2. Add furnace actuation to `DeviceController` — distinguish zone furnace relay from per-room electric commands.
-3. Dashboard: surface `HybridHeatingDecision` output — heat source choice, cost comparison, rationale.
-4. Load `ZoneConfig` from `configs/config.yaml` into runtime so `HybridController` instances are built at startup.
-5. Replace static energy price stub with live gas and electricity provider APIs.
-6. Deepen operational hardening: reporting, dashboards, and live safety checks.
+1. Replace the static energy-price stub with live gas and electricity provider APIs.
+2. Deepen dashboard and reporting comparisons across hybrid, baseline, MPC, and learned policies.
+3. Expand deterministic learned-policy evaluation and checkpoint comparison tooling.
+4. Continue converging MPC and learned policies on the shared normalized-demand runtime contract.
+5. Enrich hardware adapters with vendor-specific telemetry while preserving simulation fallback.
 
 ## Avoid
 

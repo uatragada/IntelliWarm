@@ -9,11 +9,11 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from intelliwarm.data import HeatSourceType, HeatingAction
+from intelliwarm.data import clamp_power_level, HeatSourceType, HeatingAction
 from .gym_env import IntelliWarmMultiRoomEnv
 
 
-PolicyFn = Callable[[np.ndarray, Dict], Sequence[int]]
+PolicyFn = Callable[[np.ndarray, Dict], Sequence[float]]
 
 
 @dataclass(frozen=True)
@@ -52,16 +52,25 @@ class PolicyEvaluationSummary:
 
 
 def constant_policy(
-    room_action: HeatingAction = HeatingAction.ECO,
+    room_action: object = HeatingAction.ECO,
     zone_source: HeatSourceType = HeatSourceType.ELECTRIC,
 ) -> PolicyFn:
     """Build a constant policy compatible with the multi-room environment."""
 
-    zone_value = 1 if zone_source == HeatSourceType.GAS_FURNACE else 0
-    room_value = IntelliWarmMultiRoomEnv.ACTIONS.index(room_action)
+    zone_value = 1.0 if zone_source == HeatSourceType.GAS_FURNACE else 0.0
+    room_value = clamp_power_level(room_action)
 
-    def _policy(_observation: np.ndarray, info: Dict) -> Sequence[int]:
-        return [zone_value] * int(info["max_zones"]) + [room_value] * int(info["max_rooms"])
+    def _policy(_observation: np.ndarray, info: Dict) -> Sequence[float]:
+        zone_names = list(info.get("zone_names", []))
+        zone_has_furnace = dict(info.get("zone_has_furnace", {}))
+        zone_values = []
+        for zone_index in range(int(info["max_zones"])):
+            zone_name = zone_names[zone_index] if zone_index < len(zone_names) else ""
+            if zone_source == HeatSourceType.GAS_FURNACE and not zone_has_furnace.get(zone_name, False):
+                zone_values.append(0.0)
+            else:
+                zone_values.append(zone_value)
+        return zone_values + [room_value] * int(info["max_rooms"])
 
     return _policy
 
@@ -95,7 +104,12 @@ def evaluate_policy(
             observation, reward, terminated, truncated, last_info = env.step(action)
             total_reward += float(reward)
             total_cost += float(last_info.get("total_cost", 0.0))
-            total_comfort_violation += float(last_info.get("comfort_violation", 0.0))
+            total_comfort_violation += float(
+                last_info.get(
+                    "reported_comfort_violation",
+                    last_info.get("comfort_violation", 0.0),
+                )
+            )
             steps += 1
 
         results.append(
