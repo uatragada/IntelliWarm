@@ -121,6 +121,13 @@
 - constant-policy helpers provide a simple baseline contract for future learned-policy or heuristic comparisons
 - regression coverage verifies action-layout handling and multi-scenario metric aggregation
 
+### Policy Comparison CLI
+
+- `intelliwarm/learning/policy_catalog.py` defines named electric and furnace-based baseline policies for repeatable comparisons
+- `scripts/evaluate_policies.py` exposes those policies through a thin CLI that can print human-readable summaries or JSON
+- the CLI reuses the deterministic scenario library and evaluation helpers rather than reimplementing rollout logic
+- regression coverage verifies named-policy lookup and JSON output for scenario-batch runs
+
 ---
 
 ## Active Next Priority Order
@@ -147,7 +154,7 @@ The dashboard now exposes the live hybrid heating choice to operators. The next 
 
 Future ML control work should now build on the implemented room and multi-room training environments plus deterministic evaluation helpers.
 
-- Add CLI/scripts that compare learned policies against hybrid and MPC baselines on the deterministic scenario library
+- Extend the current CLI/scripts to compare learned policies against hybrid and MPC baselines on the deterministic scenario library
 - Reuse `OFF`, `ECO`, `COMFORT`, and `PREHEAT` actions so trained policies stay compatible with the live runtime
 - Support both pure simulation training and offline evaluation against recorded scenarios
 - Keep learned-policy execution behind the same runtime and safety boundaries as other controllers

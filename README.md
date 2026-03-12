@@ -43,13 +43,14 @@ The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can
 - Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using the same `OFF`/`ECO`/`COMFORT`/`PREHEAT` action contract
 - Multi-room, multi-zone Gym-compatible training environment plus deterministic synthetic scenario generation for varied schedules and conditions
 - Deterministic policy-evaluation helpers for rolling learned or heuristic controllers across the scenario library
+- Built-in policy catalog and `scripts/evaluate_policies.py` for quick scenario-batch comparisons
 - 50+ regression tests across all modules
 
 **Immediate next work:**
 
 - Connect the pricing provider boundary to a concrete live vendor/provider for accurate production prices
 - Expand operator-facing comparisons between hybrid, baseline, MPC, and future learned policies
-- Add evaluation scripts and baselines for learned policies against hybrid and MPC controllers
+- Expand the new policy-comparison tooling to include learned-policy checkpoints and runtime-controller baselines
 
 ## Repository Map
 
@@ -93,6 +94,8 @@ IntelliWarm/
 - `intelliwarm/learning/gym_env.py`: Gym-compatible deterministic training environments for room and multi-room ML control work
 - `intelliwarm/learning/scenario_generator.py`: deterministic multi-room, multi-zone scenario library for training and evaluation
 - `intelliwarm/learning/evaluation.py`: deterministic rollout and metric aggregation helpers for comparing policies across scenarios
+- `intelliwarm/learning/policy_catalog.py`: built-in named policies for deterministic comparison runs
+- `scripts/evaluate_policies.py`: CLI for comparing named policies across scenario batches
 - `intelliwarm/storage/database.py`: SQLite persistence layer
 
 See `docs/architecture.md` for the working architecture and `docs/roadmap.md` for current sequencing.
@@ -188,7 +191,7 @@ Contributions are welcome. The current highest-impact work areas:
 
 1. **Live energy price integration** — replace the current static price stub with a real gas and electricity provider API so cost decisions are accurate.
 2. **Historical and scenario dashboards** — extend the current dashboard from live status cards into richer comparisons and operator reports.
-3. **Policy comparison workflows** — build CLI/scripts that use the shared evaluation helpers to compare learned, hybrid, and MPC policies across scenario batches.
+3. **Policy comparison expansion** — extend the new comparison CLI to evaluate learned checkpoints and runtime-controller baselines across scenario batches.
 4. **Hybrid/MPC/learned contract convergence** — align controller outputs so learned or optimized policies can slot into the same runtime surfaces.
 5. **Hardware command enrichment** — evolve furnace and room-heater adapters from shared stubs into vendor-specific integrations with explicit telemetry.
 

@@ -553,7 +553,7 @@ Status: provider boundaries for pricing and device control are implemented with 
 
 Purpose: prepare for future RL and adaptive control without breaking the core.
 
-Status: deterministic Gym-compatible room and multi-room environments plus reusable learned-policy evaluation utilities are implemented; richer house-level training objectives and production policy-selection workflows remain future work.
+Status: deterministic Gym-compatible room and multi-room environments, reusable learned-policy evaluation utilities, and a basic policy-comparison CLI are implemented; richer house-level training objectives and production policy-selection workflows remain future work.
 
 #### Deliverables
 
@@ -565,7 +565,7 @@ Status: deterministic Gym-compatible room and multi-room environments plus reusa
 
 1. Refine state, action, reward, and episode logic for house-level control.
 2. Add reward terms for cost, comfort, and switching.
-3. Add evaluation scripts or CLI workflows comparing RL policy to hybrid and MPC baselines.
+3. Extend the evaluation script/CLI workflow to compare RL policy to hybrid and MPC baselines.
 4. Expand the deterministic scenario library for broader seasonal and occupancy coverage.
 5. Keep RL isolated from production control pathways.
 

@@ -47,6 +47,8 @@ Electric heaters = room-level actuators. Independent per-room control. Cheaper w
 - `intelliwarm/learning/gym_env.py`: Gym-compatible deterministic room and multi-room environments for future ML policy training
 - `intelliwarm/learning/scenario_generator.py`: deterministic multi-room, multi-zone scenario library for training and evaluation
 - `intelliwarm/learning/evaluation.py`: deterministic policy rollout and metric aggregation across the scenario library
+- `intelliwarm/learning/policy_catalog.py`: named heuristic baselines for consistent evaluation runs
+- `scripts/evaluate_policies.py`: thin CLI wrapper for scenario-batch policy comparisons
 
 ### Control Layer
 

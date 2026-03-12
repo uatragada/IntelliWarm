@@ -14,12 +14,15 @@ from intelliwarm.learning import (
     IntelliWarmMultiRoomEnv,
     IntelliWarmRoomEnv,
     SyntheticScenarioGenerator,
+    build_policy_catalog,
     constant_policy,
+    evaluate_named_policies,
     evaluate_policy,
 )
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.pricing import EnergyPriceService, StaticPriceProvider
+from scripts.evaluate_policies import main as evaluate_policies_main
 
 
 def _build_env():
@@ -194,3 +197,35 @@ def test_evaluate_policy_rolls_up_metrics_across_scenarios():
         "winter-workday",
         "weekend-family",
     ]
+
+
+def test_policy_catalog_exposes_named_furnace_and_electric_policies():
+    catalog = build_policy_catalog()
+
+    assert "eco-electric" in catalog
+    assert "comfort-furnace" in catalog
+    assert "preheat-furnace" in catalog
+
+
+def test_evaluate_named_policies_returns_summaries_for_selected_policies():
+    results = evaluate_named_policies(
+        ["eco-electric", "comfort-furnace"],
+        scenario_names=["winter-workday"],
+        max_steps=1,
+    )
+
+    assert sorted(results.keys()) == ["comfort-furnace", "eco-electric"]
+    assert all(summary.scenario_count == 1 for summary in results.values())
+    assert all(summary.scenario_results[0].steps == 1 for summary in results.values())
+
+
+def test_evaluate_policies_script_emits_json_summary(capsys):
+    exit_code = evaluate_policies_main(
+        ["--policy", "eco-electric", "--scenario", "winter-workday", "--max-steps", "1", "--json"]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"eco-electric"' in captured.out
+    assert '"winter-workday"' in captured.out
