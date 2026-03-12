@@ -47,5 +47,5 @@ The current repo should be treated as an incremental architecture, not a greenfi
 
 ## Immediate Architecture Targets
 
-1. Extend persistence and reporting on top of the current SQLite workflow.
-2. Add live runtime safety and observability for deployment-oriented operation.
+1. Current delivery-order architecture targets are implemented.
+2. Future work should deepen live integrations and operational hardening without changing the current boundaries.

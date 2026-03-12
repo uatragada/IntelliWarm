@@ -52,11 +52,16 @@
 - room and portfolio reports are assembled through `intelliwarm/services/reporting.py`
 - reporting stays on top of the existing SQLite workflow without a storage migration framework
 
+### Runtime Safety Foundation
+
+- runtime safety overrides now guard against overheat and freeze-risk conditions before actuation
+- runtime events are persisted for recent operational visibility and cycle summaries
+- `IntelliWarmRuntime.get_runtime_status()` exposes mode, cycle summaries, and recent events for operator-facing monitoring
+
 ## Next Priority Order
 
-### 1. Runtime Safety And Observability
-
-Add deployment-oriented runtime guardrails, reporting signals, and operator-facing safety visibility.
+- current delivery-order slices are implemented
+- next work should deepen live provider integrations, dashboards, and operational hardening on the existing boundaries
 
 ## Deferred Until Later
 

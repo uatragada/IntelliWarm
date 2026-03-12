@@ -106,6 +106,18 @@ class Database:
                 FOREIGN KEY (room_id) REFERENCES rooms(id)
             )
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS runtime_events (
+                id INTEGER PRIMARY KEY,
+                room_name TEXT,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                message TEXT NOT NULL,
+                details TEXT DEFAULT '{}',
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         
         conn.commit()
         conn.close()
@@ -349,3 +361,47 @@ class Database:
         result = cursor.fetchone()
         conn.close()
         return dict(result) if result else None
+
+    def record_runtime_event(
+        self,
+        event_type: str,
+        severity: str,
+        message: str,
+        room_name: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        """Persist a runtime event for safety and observability reporting."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO runtime_events (room_name, event_type, severity, message, details)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                room_name,
+                event_type,
+                severity,
+                message,
+                str(details or {}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_recent_runtime_events(self, limit: int = 20) -> List[Dict]:
+        """Return recent runtime events in reverse chronological order."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT room_name, event_type, severity, message, details, timestamp
+            FROM runtime_events
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        results = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in results]

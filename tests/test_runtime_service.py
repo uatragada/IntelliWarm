@@ -259,3 +259,52 @@ def test_portfolio_report_aggregates_room_runs(tmp_path):
 
     assert report["room_count"] == 2
     assert report["optimization_runs"] == 2
+
+
+def test_optimize_heating_plan_applies_overheat_protection(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=25.0,
+        initial_occupancy=True,
+    )
+
+    plan = runtime.optimize_heating_plan(
+        "bedroom",
+        occupancy_override=[1.0] * runtime.config.optimization_horizon,
+        controller_type="baseline",
+    )
+
+    assert plan is not None
+    assert plan["safety_override"] == "overheat_protection"
+    assert plan["next_action"] == 0.0
+
+
+def test_runtime_status_reports_recent_events(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=19.0,
+        initial_occupancy=True,
+    )
+
+    runtime.run_optimization_cycle()
+    status = runtime.get_runtime_status()
+
+    assert status["room_count"] == 1
+    assert status["last_cycle_summary"]["successful_rooms"] == 1
+    assert status["recent_events"][0]["event_type"] == "optimization_cycle"

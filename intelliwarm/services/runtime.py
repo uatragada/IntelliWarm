@@ -53,6 +53,12 @@ class IntelliWarmRuntime:
             "electricity_price": self.config.electricity_price,
             "gas_price": self.config.gas_price,
         }
+        self.last_cycle_summary: Dict[str, Any] = {
+            "rooms_processed": 0,
+            "successful_rooms": 0,
+            "failed_rooms": 0,
+            "safety_overrides": 0,
+        }
 
         self.demo_data = pd.DataFrame()
         self.demo_timestamps: List[pd.Timestamp] = []
@@ -331,6 +337,66 @@ class IntelliWarmRuntime:
             )
         return bundle
 
+    def _record_runtime_event(
+        self,
+        event_type: str,
+        severity: str,
+        message: str,
+        room_name: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        self.database.record_runtime_event(
+            event_type=event_type,
+            severity=severity,
+            message=message,
+            room_name=room_name,
+            details=details,
+        )
+        log_method = getattr(self.logger, severity.lower(), self.logger.info)
+        log_method("%s%s", f"[{room_name}] " if room_name else "", message)
+
+    def _apply_safety_constraints(
+        self,
+        room_name: str,
+        current_temp: float,
+        plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        adjusted_plan = dict(plan)
+        proposed_action = HeatingAction.from_value(adjusted_plan["next_action"])
+
+        if current_temp >= self.config.max_temperature:
+            adjusted_plan["next_action"] = HeatingAction.OFF.power_level
+            adjusted_plan["next_action_label"] = HeatingAction.OFF.name
+            adjusted_plan["safety_override"] = "overheat_protection"
+            self._record_runtime_event(
+                event_type="safety_override",
+                severity="warning",
+                room_name=room_name,
+                message="Overheat protection forced heater OFF.",
+                details={
+                    "current_temp": current_temp,
+                    "max_temperature": self.config.max_temperature,
+                },
+            )
+            return adjusted_plan
+
+        if current_temp <= self.config.min_temperature - 1.0 and proposed_action == HeatingAction.OFF:
+            adjusted_plan["next_action"] = HeatingAction.ECO.power_level
+            adjusted_plan["next_action_label"] = HeatingAction.ECO.name
+            adjusted_plan["safety_override"] = "freeze_protection"
+            self._record_runtime_event(
+                event_type="safety_override",
+                severity="warning",
+                room_name=room_name,
+                message="Freeze protection raised heater output to ECO.",
+                details={
+                    "current_temp": current_temp,
+                    "min_temperature": self.config.min_temperature,
+                },
+            )
+
+        return adjusted_plan
+
     def optimize_heating_plan(
         self,
         room_name: str,
@@ -346,6 +412,15 @@ class IntelliWarmRuntime:
 
         try:
             current_temp = self.sensor_manager.get_temperature(room_name)
+            if current_temp is None:
+                self._record_runtime_event(
+                    event_type="sensor_error",
+                    severity="error",
+                    room_name=room_name,
+                    message="Temperature reading unavailable; optimization skipped.",
+                )
+                return None
+
             room_config = self.room_configs.get(room_name, self.config.get_room_config(room_name))
             target_temp = (
                 target_temp_override
@@ -397,6 +472,7 @@ class IntelliWarmRuntime:
             if plan and "next_action" in plan:
                 plan.setdefault("controller", controller_type)
                 plan.setdefault("next_action_label", HeatingAction.from_value(plan["next_action"]).name)
+                plan = self._apply_safety_constraints(room_name, current_temp, plan)
                 self.device_controller.set_heater(room_name, plan["next_action"])
                 self.database.record_optimization(
                     room_name,
@@ -500,8 +576,31 @@ class IntelliWarmRuntime:
 
     def run_optimization_cycle(self):
         """Run one optimization pass across all initialized rooms."""
+        successful_rooms = 0
+        failed_rooms = 0
+        safety_overrides = 0
         for room_name in self.room_names:
-            self.optimize_heating_plan(room_name)
+            plan = self.optimize_heating_plan(room_name)
+            if plan is None:
+                failed_rooms += 1
+                continue
+
+            successful_rooms += 1
+            if plan.get("safety_override"):
+                safety_overrides += 1
+
+        self.last_cycle_summary = {
+            "rooms_processed": len(self.room_names),
+            "successful_rooms": successful_rooms,
+            "failed_rooms": failed_rooms,
+            "safety_overrides": safety_overrides,
+        }
+        self._record_runtime_event(
+            event_type="optimization_cycle",
+            severity="info",
+            message="Completed optimization cycle.",
+            details=self.last_cycle_summary,
+        )
 
     def get_room_report(self, room_name: str, limit: int = 10) -> Optional[Dict[str, Any]]:
         """Return a persisted report for a single room."""
@@ -510,3 +609,14 @@ class IntelliWarmRuntime:
     def get_portfolio_report(self, limit_per_room: int = 5) -> Dict[str, Any]:
         """Return an aggregated report across all rooms."""
         return self.report_service.build_portfolio_report(limit_per_room=limit_per_room)
+
+    def get_runtime_status(self, event_limit: int = 10) -> Dict[str, Any]:
+        """Return deployment-oriented runtime status and recent events."""
+        hardware_control_enabled = bool(getattr(self.config, "enable_device_control", False))
+        return {
+            "mode": "live" if hardware_control_enabled else "simulation",
+            "hardware_control_enabled": hardware_control_enabled,
+            "room_count": len(self.room_names),
+            "last_cycle_summary": dict(self.last_cycle_summary),
+            "recent_events": self.database.get_recent_runtime_events(limit=event_limit),
+        }

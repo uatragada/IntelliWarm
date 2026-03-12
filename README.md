@@ -18,6 +18,7 @@ Current completed foundations:
 - modular Flask routes under `intelliwarm/routes/`
 - typed config validation and preserved structured schedule support in `intelliwarm/core/config.py`
 - SQLite-backed reporting services in `intelliwarm/services/reporting.py`
+- runtime safety overrides and recent-event observability in `intelliwarm/services/runtime.py`
 - deterministic multi-room simulation in `intelliwarm/models/simulator.py`
 - thermal step and simulate APIs in `intelliwarm/models/thermal_model.py`
 - timestamp-aware occupancy prediction in `intelliwarm/prediction/occupancy_model.py`
@@ -110,7 +111,7 @@ The repo now includes explicit instructions and prompts for that flow.
 
 ## Current Priority Queue
 
-1. Runtime safety and observability improvements for live deployments.
+The current delivery-order implementation slices are complete. Next work should deepen live integrations and operator-facing features on the existing service and adapter boundaries.
 
 ## Testing
 
