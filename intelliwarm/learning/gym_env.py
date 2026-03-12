@@ -4,6 +4,7 @@ Gym-compatible training environment for IntelliWarm.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -269,10 +270,13 @@ class IntelliWarmMultiRoomEnv(gym.Env):
 
         self.max_rooms = max(len(scenario.room_configs) for scenario in self.scenarios)
         self.max_zones = max(len(scenario.zone_configs) for scenario in self.scenarios)
+        # Global features: T_out, elec_price, gas_price, hour_sin, hour_cos,
+        #                   next_1h_occ_max, next_2h_occ_max  (7 total)
+        self._n_global_features = 7
         self.observation_space = spaces.Box(
             low=-1000.0,
             high=1000.0,
-            shape=(self.max_rooms * 6 + self.max_zones * 3 + 3,),
+            shape=(self.max_rooms * 6 + self.max_zones * 3 + self._n_global_features,),
             dtype=np.float32,
         )
         self.action_space = spaces.MultiDiscrete(
@@ -287,6 +291,7 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         self._simulator: Optional[HouseSimulator] = None
         self._current_state: Optional[SimulationState] = None
         self._price_service: Optional[ScenarioBoundPriceService] = None
+        self._occupancy_predictors: Dict[str, OccupancyPredictor] = {}
         self._step_index = 0
         self._last_effective_actions: Dict[str, HeatingAction] = {}
         self._last_source_actions: Dict[str, HeatSourceType] = {}
@@ -374,10 +379,31 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             zone_features.extend([0.0] * 3)
 
         prices = self._current_prices()
+        # Compute hour-of-day cyclical encoding so the policy can learn
+        # time-dependent patterns (e.g. start preheating 2 h before 7 am).
+        hour = self._current_state.timestamp.hour + self._current_state.timestamp.minute / 60.0
+        hour_sin = math.sin(2 * math.pi * hour / 24.0)
+        hour_cos = math.cos(2 * math.pi * hour / 24.0)
+        # Lookahead occupancy: maximum probability across all rooms 1 and 2 h ahead.
+        # This gives the policy an explicit "occupancy is coming" signal so it can
+        # schedule preheating during unoccupied early-morning hours.
+        step_td = timedelta(minutes=self._scenario.step_minutes)
+        next_1h_time = self._current_state.timestamp + step_td
+        next_2h_time = self._current_state.timestamp + 2 * step_td
+        if self._occupancy_predictors:
+            next_1h_occ = max(p.predict(next_1h_time) for p in self._occupancy_predictors.values())
+            next_2h_occ = max(p.predict(next_2h_time) for p in self._occupancy_predictors.values())
+        else:
+            next_1h_occ = 0.0
+            next_2h_occ = 0.0
         global_features = [
             float(self._outside_temp()),
             float(prices["electricity"]),
             float(prices["gas"]),
+            hour_sin,
+            hour_cos,
+            float(next_1h_occ),
+            float(next_2h_occ),
         ]
         return np.array(room_features + zone_features + global_features, dtype=np.float32)
 
@@ -439,6 +465,12 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             electricity_prices=self._scenario.electricity_prices,
             gas_prices=self._scenario.gas_prices,
         )
+        # Build per-room occupancy predictors so _observation() can look
+        # ahead by 1–2 hours to give the policy a preheat signal.
+        self._occupancy_predictors = {
+            room_name: OccupancyPredictor(room_name, room_config.occupancy_schedule)
+            for room_name, room_config in self._scenario.room_configs.items()
+        }
         self._step_index = 0
         self._last_effective_actions = {
             room_name: HeatingAction.OFF
@@ -457,7 +489,8 @@ class IntelliWarmMultiRoomEnv(gym.Env):
                 room_name: OccupancyPredictor(room_name, room_config.occupancy_schedule).predict(self._scenario.start_time)
                 for room_name, room_config in self._scenario.room_configs.items()
             },
-            heat_sources={zone_name: HeatSourceType.ELECTRIC for zone_name in self._zone_names},
+            # Keyed by room_name so simulator.step() can look up per-room source.
+            heat_sources={room_name: HeatSourceType.ELECTRIC for room_name in self._room_names},
         )
         return self._observation(), {
             "scenario_name": self._scenario.name,
@@ -542,7 +575,12 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             + invalid_source_penalty
         )
 
-        next_state.heat_sources = dict(zone_sources)
+        # Expand zone-level source decision to per-room keys so the simulator
+        # can look up each room's active heat source by room_name.
+        next_state.heat_sources = {
+            room_name: zone_sources[self._scenario.room_configs[room_name].zone]
+            for room_name in self._room_names
+        }
         self._current_state = next_state
         self._last_effective_actions = dict(effective_actions)
         self._last_source_actions = dict(zone_sources)

@@ -117,7 +117,7 @@ def test_multi_room_env_reset_returns_padded_multi_room_observation():
 
     observation, info = env.reset(options={"scenario_name": "winter-workday"})
 
-    assert observation.shape == (30,)
+    assert observation.shape == (34,)
     assert info["scenario_name"] == "winter-workday"
     assert info["zone_names"] == ["Residential", "Work"]
     assert info["room_names"] == ["bedroom", "living_room", "office"]
@@ -135,7 +135,7 @@ def test_multi_room_env_applies_zone_furnace_to_all_rooms_in_zone():
     action = [1, 0, 0, 0, 3, 2]
     observation, reward, terminated, truncated, info = env.step(action)
 
-    assert observation.shape == (30,)
+    assert observation.shape == (34,)
     assert reward < 0
     assert terminated is False
     assert truncated is False
