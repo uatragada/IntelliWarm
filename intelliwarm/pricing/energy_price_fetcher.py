@@ -52,7 +52,7 @@ class EnergyPriceService:
             "gas": self.gas_price
         })
     
-    def get_price_forecast(self, hours: int = 24) -> List[Dict]:
+    def get_price_forecast(self, hours: int = 24, start_time: datetime = None) -> List[Dict]:
         """
         Get price forecast for next N hours
         
@@ -70,9 +70,11 @@ class EnergyPriceService:
             "gas": self.gas_price
         }
         
+        reference_time = start_time or datetime.now()
+
         for h in range(hours):
             # Simple pattern: prices may vary by time of day (TOU)
-            hour = (datetime.now().hour + h) % 24
+            hour = (reference_time.hour + h) % 24
             
             # Peak hours: 6am-9am and 4pm-9pm
             if (6 <= hour < 9) or (16 <= hour < 21):

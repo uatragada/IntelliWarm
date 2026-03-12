@@ -9,6 +9,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from intelliwarm.data import HeatingAction, RoomConfig
+from datetime import datetime
+
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.optimizer import MPCController, CostFunction
 from intelliwarm.prediction import OccupancyPredictor
@@ -16,6 +18,7 @@ from intelliwarm.pricing import EnergyPriceService
 from intelliwarm.sensors import SensorManager
 from intelliwarm.control import BaselineController, DeviceController
 from intelliwarm.core import SystemConfig
+from intelliwarm.services import ForecastBundleService
 
 
 class MockConfig:
@@ -294,12 +297,54 @@ class TestEnergyPricing:
     def test_price_forecast(self):
         """Test price forecasting"""
         service = EnergyPriceService(0.12, 5.0)
-        
-        forecast = service.get_price_forecast(24)
-        
+
+        forecast = service.get_price_forecast(24, start_time=datetime(2026, 3, 11, 8, 0))
+
         assert len(forecast) == 24
         assert all("electricity" in p and "gas" in p for p in forecast)
         assert all(p["electricity"] > 0 for p in forecast)
+
+
+class TestForecastBundleService:
+    """Test aligned forecast bundle generation."""
+
+    def test_build_bundle_aligns_forecast_horizons(self):
+        service = ForecastBundleService(EnergyPriceService(0.12, 5.0))
+        predictor = OccupancyPredictor("office", schedule="9-18")
+
+        bundle = service.build_bundle(
+            room_name="office",
+            occupancy_predictor=predictor,
+            horizon_steps=6,
+            start_time=datetime(2026, 3, 11, 8, 0),
+        )
+
+        assert bundle.room_id == "office"
+        assert len(bundle.steps) == 6
+        assert bundle.steps[0].timestamp.hour == 8
+        assert bundle.steps[1].timestamp.hour == 9
+        assert bundle.occupancy_probabilities[1] > bundle.occupancy_probabilities[0]
+        assert len(bundle.electricity_prices) == 6
+        assert len(bundle.outdoor_temperatures) == 6
+
+    def test_override_bundle_replaces_aligned_values(self):
+        service = ForecastBundleService(EnergyPriceService(0.12, 5.0))
+        predictor = OccupancyPredictor("office", schedule="9-18")
+        bundle = service.build_bundle(
+            room_name="office",
+            occupancy_predictor=predictor,
+            horizon_steps=3,
+            start_time=datetime(2026, 3, 11, 8, 0),
+        )
+
+        updated = service.override_bundle(
+            bundle,
+            occupancy_probabilities=[0.2, 0.4, 0.6],
+            outdoor_temperatures=[3.0, 4.0, 5.0],
+        )
+
+        assert updated.occupancy_probabilities == [0.2, 0.4, 0.6]
+        assert updated.outdoor_temperatures == [3.0, 4.0, 5.0]
 
 
 # ============================================================================

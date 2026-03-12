@@ -17,6 +17,7 @@ from intelliwarm.pricing import EnergyPriceService
 from intelliwarm.sensors import SensorManager
 from intelliwarm.storage import Database
 
+from .forecast_bundle import ForecastBundleService
 from .runtime import IntelliWarmRuntime
 
 
@@ -28,6 +29,7 @@ class RuntimeBootstrap:
     sensor_manager: SensorManager
     device_controller: DeviceController
     energy_service: EnergyPriceService
+    forecast_service: ForecastBundleService
     scheduler: SystemScheduler
     runtime: IntelliWarmRuntime
     logger: logging.Logger
@@ -66,6 +68,7 @@ def create_runtime_bootstrap(
     sensor_manager = SensorManager()
     device_controller = DeviceController()
     energy_service = EnergyPriceService(config.electricity_price, config.gas_price)
+    forecast_service = ForecastBundleService(energy_service=energy_service)
     scheduler = SystemScheduler()
     runtime = IntelliWarmRuntime(
         config=config,
@@ -73,6 +76,7 @@ def create_runtime_bootstrap(
         sensor_manager=sensor_manager,
         device_controller=device_controller,
         energy_service=energy_service,
+        forecast_service=forecast_service,
         logger=app_logger,
     )
     runtime.bootstrap_from_config()
@@ -84,6 +88,7 @@ def create_runtime_bootstrap(
         sensor_manager=sensor_manager,
         device_controller=device_controller,
         energy_service=energy_service,
+        forecast_service=forecast_service,
         scheduler=scheduler,
         runtime=runtime,
         logger=app_logger,

@@ -1,11 +1,12 @@
 """
-Occupancy Prediction Module
-Predicts room occupancy probability
+Occupancy prediction module.
 """
 
 import logging
-from typing import Dict, List
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import List, Optional
+
+from intelliwarm.data import OccupancyWindow, RoomConfig
 
 
 class OccupancyPredictor:
@@ -16,7 +17,7 @@ class OccupancyPredictor:
     Future: Bayesian model, ML classifier
     """
     
-    def __init__(self, room_name: str, schedule: str = ""):
+    def __init__(self, room_name: str, schedule: object = ""):
         """
         Initialize occupancy predictor
         
@@ -26,7 +27,19 @@ class OccupancyPredictor:
         """
         self.room_name = room_name
         self.schedule = schedule
+        self.windows = RoomConfig.parse_schedule(schedule)
         self.logger = logging.getLogger("IntelliWarm.OccupancyPrediction")
+
+    def predict(self, timestamp: datetime) -> float:
+        """Predict occupancy probability for a timestamp."""
+        if not self.windows:
+            return 0.5
+
+        matching_windows = [window for window in self.windows if window.contains(timestamp)]
+        if not matching_windows:
+            return 0.1
+
+        return max(window.probability for window in matching_windows)
     
     def predict_occupancy(self, hour: int) -> float:
         """
@@ -38,22 +51,34 @@ class OccupancyPredictor:
         Returns:
             Occupancy probability (0-1)
         """
-        if not self.schedule or "-" not in self.schedule:
-            return 0.5  # Default: assume 50% chance
-        
+        reference_time = datetime.now().replace(hour=hour % 24, minute=0, second=0, microsecond=0)
         try:
-            start_hour, end_hour = map(int, self.schedule.split("-"))
-            
-            if start_hour <= hour < end_hour:
-                return 0.8  # High probability during scheduled hours
-            else:
-                return 0.1  # Low probability outside scheduled hours
-        
+            return self.predict(reference_time)
         except Exception as e:
             self.logger.error(f"Schedule parsing failed: {e}")
             return 0.5
+
+    def predict_probability(self, timestamp: datetime) -> float:
+        """Compatibility alias for timestamp-based occupancy prediction."""
+        return self.predict(timestamp)
+
+    def predict_horizon(
+        self,
+        start_time: datetime,
+        horizon_steps: int,
+        step_minutes: int,
+    ) -> List[float]:
+        """Predict occupancy probability over a future horizon."""
+        return [
+            self.predict(start_time + timedelta(minutes=step_minutes * step_index))
+            for step_index in range(horizon_steps)
+        ]
     
-    def predict_occupancy_horizon(self, hours: int = 24) -> List[float]:
+    def predict_occupancy_horizon(
+        self,
+        hours: int = 24,
+        start_time: Optional[datetime] = None,
+    ) -> List[float]:
         """
         Predict occupancy probability for next N hours
         
@@ -63,17 +88,10 @@ class OccupancyPredictor:
         Returns:
             List of occupancy probabilities
         """
-        current_hour = datetime.now().hour
-        predictions = []
-        
-        for h in range(hours):
-            hour = (current_hour + h) % 24
-            prob = self.predict_occupancy(hour)
-            predictions.append(prob)
-        
-        return predictions
+        return self.predict_horizon(start_time or datetime.now(), hours, 60)
     
     def update_schedule(self, schedule: str):
         """Update occupancy schedule"""
         self.schedule = schedule
+        self.windows = RoomConfig.parse_schedule(schedule)
         self.logger.info(f"Schedule updated: {schedule}")

@@ -143,6 +143,64 @@ class SimulationState:
 
 
 @dataclass(frozen=True)
+class ForecastStep:
+    """Aligned per-step forecast inputs for control and simulation."""
+
+    timestamp: datetime
+    occupancy_probability: float
+    outdoor_temp: float
+    electricity_price: float
+    gas_price: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize a forecast step for API and service responses."""
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "occupancy_probability": self.occupancy_probability,
+            "outdoor_temp": self.outdoor_temp,
+            "electricity_price": self.electricity_price,
+            "gas_price": self.gas_price,
+        }
+
+
+@dataclass(frozen=True)
+class ForecastBundle:
+    """Aligned forecast horizon shared across controllers and services."""
+
+    room_id: str
+    start_time: datetime
+    step_minutes: int
+    steps: List[ForecastStep] = field(default_factory=list)
+    source: str = "deterministic"
+
+    @property
+    def occupancy_probabilities(self) -> List[float]:
+        return [step.occupancy_probability for step in self.steps]
+
+    @property
+    def outdoor_temperatures(self) -> List[float]:
+        return [step.outdoor_temp for step in self.steps]
+
+    @property
+    def electricity_prices(self) -> List[float]:
+        return [step.electricity_price for step in self.steps]
+
+    @property
+    def gas_prices(self) -> List[float]:
+        return [step.gas_price for step in self.steps]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the bundle for runtime responses."""
+        return {
+            "room": self.room_id,
+            "start_time": self.start_time.isoformat(),
+            "step_minutes": self.step_minutes,
+            "source": self.source,
+            "steps": [step.to_dict() for step in self.steps],
+        }
+
+
+@dataclass(frozen=True)
 class ControlDecision:
     """Shared control decision contract for baseline and runtime consumers."""
 

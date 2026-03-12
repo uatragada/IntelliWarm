@@ -10,10 +10,11 @@ The current repo should be treated as an incremental architecture, not a greenfi
 
 - `app.py`: Flask entrypoint
 - `intelliwarm/services/runtime.py`: runtime orchestration, demo loading, optimization dispatch, and room state management
+- `intelliwarm/services/forecast_bundle.py`: aligned occupancy, weather, and pricing forecasts for controllers
 
 ### Domain And Simulation Layer
 
-- `intelliwarm/data/models.py`: `RoomConfig`, `OccupancyWindow`, `HeatingAction`, `SimulationState`
+- `intelliwarm/data/models.py`: shared `RoomConfig`, `OccupancyWindow`, `HeatingAction`, `SimulationState`, `ControlDecision`, and `ForecastBundle` contracts
 - `intelliwarm/models/thermal_model.py`: room thermal dynamics with `step()` and `simulate()`
 - `intelliwarm/models/simulator.py`: deterministic `HouseSimulator`
 - `intelliwarm/prediction/occupancy_model.py`: schedule and timestamp-based occupancy prediction
@@ -44,7 +45,7 @@ The current repo should be treated as an incremental architecture, not a greenfi
 
 ## Immediate Architecture Targets
 
-1. Add a baseline controller with shared discrete actions and explanation outputs.
-2. Add a forecast bundle service consumed by both simulator and controllers.
-3. Break route logic out of `app.py` into dashboard-focused modules.
-4. Move config handling toward typed models without breaking `configs/config.yaml`.
+1. Add hardware adapter boundaries for sensors and HVAC devices with simulation fallback.
+2. Break route logic out of `app.py` into dashboard-focused modules.
+3. Move config handling toward typed models without breaking `configs/config.yaml`.
+4. Extend persistence and reporting on top of the current SQLite workflow.

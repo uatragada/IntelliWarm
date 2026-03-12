@@ -22,11 +22,17 @@
 - shared runtime support added for discrete `OFF`, `ECO`, `COMFORT`, and `PREHEAT` actions
 - baseline controller exposed through runtime and optimization API selection
 
+### Forecast Foundation
+
+- aligned forecast bundle service added under `intelliwarm/services/forecast_bundle.py`
+- occupancy, deterministic weather fallback, and energy pricing now share one horizon contract
+- runtime optimization responses include the forecast bundle used for controller inputs
+
 ## Next Priority Order
 
-### 1. Forecast Bundle Service
+### 1. Hardware Adapter Boundary
 
-Add a shared service that aligns occupancy, outdoor temperature, and energy price horizons.
+Add sensor and HVAC actuator adapter boundaries with simulation fallback for offline-safe runtime operation.
 
 ### 2. Route Modularization
 

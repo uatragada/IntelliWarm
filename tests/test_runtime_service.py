@@ -2,6 +2,7 @@
 Tests for the application runtime service.
 """
 
+from datetime import datetime
 import logging
 import os
 import sqlite3
@@ -150,3 +151,55 @@ def test_optimize_heating_plan_supports_baseline_controller(tmp_path):
 
     device_status = runtime.device_controller.get_device_status("bedroom")
     assert device_status["power_level"] == plan["next_action"]
+
+
+def test_build_forecast_bundle_aligns_room_forecasts(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=20.0,
+        initial_occupancy=False,
+    )
+
+    bundle = runtime.build_forecast_bundle(
+        "bedroom",
+        start_time=datetime(2026, 3, 11, 8, 0),
+    )
+
+    assert bundle is not None
+    assert len(bundle.steps) == runtime.config.optimization_horizon
+    assert bundle.steps[0].timestamp.hour == 8
+    assert bundle.steps[1].timestamp.hour == 9
+    assert bundle.to_dict()["room"] == "bedroom"
+
+
+def test_optimize_heating_plan_includes_forecast_bundle(tmp_path):
+    runtime = create_runtime(tmp_path)
+    runtime.add_room(
+        name="bedroom",
+        room_size=150,
+        zone="Residential",
+        room_config={
+            "zone": "Residential",
+            "target_temp": 21,
+            "occupancy_schedule": "9-18",
+        },
+        initial_sensor_temp=19.0,
+        initial_occupancy=True,
+    )
+
+    plan = runtime.optimize_heating_plan(
+        "bedroom",
+        occupancy_override=[1.0] * runtime.config.optimization_horizon,
+    )
+
+    assert plan is not None
+    assert "forecast_bundle" in plan
+    assert len(plan["forecast_bundle"]["steps"]) == runtime.config.optimization_horizon

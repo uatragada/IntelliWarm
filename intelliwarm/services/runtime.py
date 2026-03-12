@@ -10,10 +10,12 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from intelliwarm.control import BaselineController
-from intelliwarm.data import HeatingAction, RoomConfig
+from intelliwarm.data import ForecastBundle, HeatingAction, RoomConfig
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.optimizer import CostFunction, MPCController
 from intelliwarm.prediction import OccupancyPredictor
+
+from .forecast_bundle import ForecastBundleService
 
 
 class IntelliWarmRuntime:
@@ -26,6 +28,7 @@ class IntelliWarmRuntime:
         sensor_manager,
         device_controller,
         energy_service,
+        forecast_service: Optional[ForecastBundleService] = None,
         logger: Optional[logging.Logger] = None,
     ):
         self.config = config
@@ -33,6 +36,7 @@ class IntelliWarmRuntime:
         self.sensor_manager = sensor_manager
         self.device_controller = device_controller
         self.energy_service = energy_service
+        self.forecast_service = forecast_service or ForecastBundleService(energy_service=energy_service)
         self.logger = logger or logging.getLogger("IntelliWarm.Runtime")
 
         self.thermal_models: Dict[str, RoomThermalModel] = {}
@@ -299,6 +303,32 @@ class IntelliWarmRuntime:
 
         return rooms_data
 
+    def build_forecast_bundle(
+        self,
+        room_name: str,
+        occupancy_override: Optional[List[float]] = None,
+        outdoor_temp_override: Optional[List[float]] = None,
+        start_time=None,
+    ) -> Optional[ForecastBundle]:
+        """Build an aligned forecast bundle for a room."""
+        if room_name not in self.occupancy_predictors:
+            self.logger.warning("Forecast requested for uninitialized room: %s", room_name)
+            return None
+
+        bundle = self.forecast_service.build_bundle(
+            room_name=room_name,
+            occupancy_predictor=self.occupancy_predictors[room_name],
+            horizon_steps=self.config.optimization_horizon,
+            start_time=start_time,
+        )
+        if occupancy_override is not None or outdoor_temp_override is not None:
+            bundle = self.forecast_service.override_bundle(
+                bundle,
+                occupancy_probabilities=occupancy_override,
+                outdoor_temperatures=outdoor_temp_override,
+            )
+        return bundle
+
     def optimize_heating_plan(
         self,
         room_name: str,
@@ -320,17 +350,16 @@ class IntelliWarmRuntime:
                 if target_temp_override is not None
                 else room_config.get("target_temp", self.config.default_target_temp)
             )
-            outside_temp = 5.0
-
-            occupancy_probs = (
-                occupancy_override
-                if occupancy_override is not None
-                else self.occupancy_predictors[room_name].predict_occupancy_horizon(
-                    self.config.optimization_horizon
-                )
+            forecast_bundle = self.build_forecast_bundle(
+                room_name,
+                occupancy_override=occupancy_override,
             )
-            energy_forecast = self.energy_service.get_price_forecast(self.config.optimization_horizon)
-            energy_prices = [point["electricity"] for point in energy_forecast]
+            if forecast_bundle is None:
+                return None
+
+            occupancy_probs = forecast_bundle.occupancy_probabilities
+            outside_temp = forecast_bundle.outdoor_temperatures[0] if forecast_bundle.steps else 5.0
+            energy_prices = forecast_bundle.electricity_prices
 
             device_status = self.device_controller.get_device_status(room_name)
             current_action = (
@@ -366,6 +395,7 @@ class IntelliWarmRuntime:
             if plan and "next_action" in plan:
                 self.device_controller.set_heater(room_name, plan["next_action"])
                 self.database.record_optimization(room_name, plan["next_action"], plan["total_cost"])
+                plan["forecast_bundle"] = forecast_bundle.to_dict()
 
             return plan
         except Exception as exc:
