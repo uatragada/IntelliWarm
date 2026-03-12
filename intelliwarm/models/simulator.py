@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from intelliwarm.data import HeatingAction, RoomConfig, SimulationState
+from intelliwarm.data import HeatingAction, HeatSourceType, RoomConfig, SimulationState
 from intelliwarm.models.thermal_model import solar_irradiance_wm2
 from intelliwarm.prediction import OccupancyPredictor
 
@@ -84,13 +84,25 @@ class HouseSimulator:
             action = self._resolve_action(heating_actions.get(room_name, HeatingAction.OFF))
             resolved_actions[room_name] = action
             occupancy_val = self._occupancy_for_timestamp(room_name, resolved_timestamp)
+
+            # Route the action to the correct heat input based on the
+            # room's active heat source stored in the simulation state.
+            heat_source = state.heat_sources.get(room_name, HeatSourceType.ELECTRIC)
+            if heat_source is HeatSourceType.GAS_FURNACE:
+                electric_frac = 0.0
+                furnace_frac = action.power_level
+            else:
+                electric_frac = action.power_level
+                furnace_frac = 0.0
+
             next_temperatures[room_name] = self.thermal_models[room_name].step(
                 current_temp=current_temp,
                 outside_temp=state.outdoor_temp,
-                heating_power=action.power_level,
+                heating_power=electric_frac,
                 dt_minutes=dt_minutes,
                 solar_irradiance_w_m2=solar_w_m2,
                 occupancy=occupancy_val,
+                furnace_heating_power=furnace_frac,
             )
 
         next_occupancy = {

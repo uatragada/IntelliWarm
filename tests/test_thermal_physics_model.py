@@ -407,3 +407,305 @@ class TestSolarIrradianceWm2:
         am = solar_irradiance_wm2(datetime(2026, 6, 21, 10, 0), latitude_deg=40.0)
         pm = solar_irradiance_wm2(datetime(2026, 6, 21, 14, 0), latitude_deg=40.0)
         assert am == pytest.approx(pm, rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Dual heat source — PhysicsRoomThermalModel
+# ---------------------------------------------------------------------------
+
+from intelliwarm.data import HeatSourceType, ZoneConfig
+
+
+class TestPhysicsRoomThermalModelDualHeatSources:
+    """Electric and furnace inputs are physically independent; the hybrid
+    controller guarantees mutual exclusion, but the model accepts both."""
+
+    def _electric_model(self) -> PhysicsRoomThermalModel:
+        return PhysicsRoomThermalModel(
+            room_name="office",
+            thermal_capacitance_kj_k=200.0,
+            conductance_ua_w_k=10.0,
+            hvac_power_w=1000.0,
+            furnace_power_w=0.0,
+        )
+
+    def _furnace_model(self) -> PhysicsRoomThermalModel:
+        return PhysicsRoomThermalModel(
+            room_name="bedroom",
+            thermal_capacitance_kj_k=400.0,
+            conductance_ua_w_k=10.0,
+            hvac_power_w=0.0,
+            furnace_power_w=7000.0,
+        )
+
+    def _dual_model(self) -> PhysicsRoomThermalModel:
+        return PhysicsRoomThermalModel(
+            room_name="living_room",
+            thermal_capacitance_kj_k=400.0,
+            conductance_ua_w_k=10.0,
+            hvac_power_w=1500.0,
+            furnace_power_w=7000.0,
+        )
+
+    # --- electric path ---
+
+    def test_electric_only_heats_via_heating_power(self):
+        model = self._electric_model()
+        T_start = 15.0
+        T_out = 5.0
+        T1 = model.step(T_start, T_out, heating_power=1.0, furnace_heating_power=0.0)
+        assert T1 > T_start
+
+    def test_electric_only_ignores_furnace_fraction(self):
+        """furnace_power_w=0 means furnace_heating_power has no effect."""
+        model = self._electric_model()
+        T_start = 15.0
+        T_out = 5.0
+        T_no_furnace = model.step(T_start, T_out, heating_power=0.5, furnace_heating_power=0.0)
+        T_furnace_on = model.step(T_start, T_out, heating_power=0.5, furnace_heating_power=1.0)
+        assert T_no_furnace == pytest.approx(T_furnace_on), (
+            "furnace_power_w=0 should make furnace_heating_power a no-op"
+        )
+
+    # --- furnace path ---
+
+    def test_furnace_heats_room_via_furnace_heating_power(self):
+        model = self._furnace_model()
+        T_start = 15.0
+        T_out = 5.0
+        T1 = model.step(T_start, T_out, heating_power=0.0, furnace_heating_power=1.0)
+        assert T1 > T_start
+
+    def test_furnace_only_ignores_electric_fraction(self):
+        """electric_power_w=0 means heating_power has no effect."""
+        model = self._furnace_model()
+        T_start = 15.0
+        T_out = 5.0
+        T_no_elec = model.step(T_start, T_out, heating_power=0.0, furnace_heating_power=0.5)
+        T_elec_on = model.step(T_start, T_out, heating_power=1.0, furnace_heating_power=0.5)
+        assert T_no_elec == pytest.approx(T_elec_on), (
+            "electric_power_w=0 should make heating_power a no-op"
+        )
+
+    def test_furnace_heats_more_than_electric_at_full_power(self):
+        """Furnace (7 kW) should heat a room faster than electric (1.5 kW)."""
+        common = dict(thermal_capacitance_kj_k=400.0, conductance_ua_w_k=10.0)
+        elec = PhysicsRoomThermalModel(
+            room_name="e", hvac_power_w=1500.0, furnace_power_w=0.0, **common)
+        furn = PhysicsRoomThermalModel(
+            room_name="f", hvac_power_w=0.0, furnace_power_w=7000.0, **common)
+        T_start, T_out = 15.0, 5.0
+        T_elec = elec.step(T_start, T_out, heating_power=1.0, furnace_heating_power=0.0)
+        T_furn = furn.step(T_start, T_out, heating_power=0.0, furnace_heating_power=1.0)
+        assert T_furn > T_elec, "Furnace should deliver more heat than electric"
+
+    def test_combined_sources_add_linearly(self):
+        """Both sources active should produce more heat than either alone."""
+        model = self._dual_model()
+        T_start, T_out = 15.0, 5.0
+        T_elec_only = model.step(T_start, T_out, heating_power=1.0, furnace_heating_power=0.0)
+        T_furn_only = model.step(T_start, T_out, heating_power=0.0, furnace_heating_power=1.0)
+        T_both = model.step(T_start, T_out, heating_power=1.0, furnace_heating_power=1.0)
+        assert T_both > T_elec_only
+        assert T_both > T_furn_only
+        # Linearity: the individual gains should sum to the combined gain
+        delta_elec = T_elec_only - T_start
+        delta_furn = T_furn_only - T_start
+        # (small discrepancy from nonlinear UA term OK, use generous tolerance)
+        assert T_both == pytest.approx(T_start + delta_elec + delta_furn, rel=0.05)
+
+    def test_furnace_steady_state(self):
+        """Furnace steady-state ΔT = furnace_power_w / UA."""
+        furnace_w, ua = 7000.0, 10.0
+        model = PhysicsRoomThermalModel(
+            room_name="r",
+            thermal_capacitance_kj_k=400.0,
+            conductance_ua_w_k=ua,
+            hvac_power_w=0.0,
+            furnace_power_w=furnace_w,
+        )
+        T_out = 0.0
+        T = T_out
+        for _ in range(500):
+            T = model.step(T, T_out, heating_power=0.0, furnace_heating_power=1.0,
+                           dt_minutes=60)
+        expected = furnace_w / ua
+        assert abs(T - T_out - expected) < 1.0, (
+            f"Furnace steady-state ΔT={T - T_out:.1f}°C, expected {expected:.1f}°C"
+        )
+
+    # --- properties ---
+
+    def test_steady_state_delta_t_electric_only(self):
+        model = self._electric_model()
+        assert model.steady_state_delta_t == pytest.approx(100.0)  # 1000/10
+
+    def test_steady_state_delta_t_furnace_only(self):
+        model = self._furnace_model()
+        assert model.steady_state_delta_t == pytest.approx(700.0)  # 7000/10
+
+    def test_steady_state_delta_t_combined(self):
+        model = self._dual_model()
+        assert model.steady_state_delta_t == pytest.approx(850.0)  # (1500+7000)/10
+
+    def test_hvac_power_w_property_returns_electric(self):
+        """hvac_power_w backward-compat property must return electric_power_w."""
+        model = self._dual_model()
+        assert model.hvac_power_w == pytest.approx(model.electric_power_w)
+
+    # --- simulate() ---
+
+    def test_simulate_reads_furnace_from_forecast_inputs(self):
+        model = self._furnace_model()
+        T_start = 15.0
+        inputs = [
+            {"outdoor_temp": 5.0, "heating_power": 0.0, "furnace_heating_power": 1.0},
+            {"outdoor_temp": 5.0, "heating_power": 0.0, "furnace_heating_power": 1.0},
+        ]
+        temps = model.simulate(T_start, inputs)
+        assert len(temps) == 2
+        assert temps[0] > T_start
+        assert temps[1] > temps[0]  # continued heating
+
+
+class TestFromRoomConfigWithZoneConfig:
+    """from_room_config() correctly derives furnace_power_w from ZoneConfig."""
+
+    def _residential_zone(self) -> ZoneConfig:
+        return ZoneConfig(
+            zone_id="Residential",
+            has_furnace=True,
+            furnace_btu_per_hour=60_000.0,
+            furnace_efficiency=0.80,
+        )
+
+    def _work_zone(self) -> ZoneConfig:
+        return ZoneConfig(
+            zone_id="Work",
+            has_furnace=False,
+        )
+
+    def test_furnace_zone_populates_furnace_power_w(self):
+        rc = RoomConfig.from_legacy_config(
+            "bedroom1",
+            {"zone": "Residential", "target_temp": 21,
+             "heater_power": 1500, "thermal_mass": 0.07,
+             "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel.from_room_config(
+            rc, zone_config=self._residential_zone(), num_zone_rooms=2
+        )
+        # 60000 BTU/hr × 0.29307 W/(BTU/hr) × 0.80 / 2 rooms ≈ 7033 W
+        expected = 60_000 * 0.29307 * 0.80 / 2
+        assert model.furnace_power_w == pytest.approx(expected, rel=1e-3)
+        assert model.electric_power_w == pytest.approx(1500.0)
+
+    def test_no_furnace_zone_keeps_furnace_power_zero(self):
+        rc = RoomConfig.from_legacy_config(
+            "office",
+            {"zone": "Work", "target_temp": 21,
+             "heater_power": 1000, "thermal_mass": 0.05,
+             "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel.from_room_config(
+            rc, zone_config=self._work_zone()
+        )
+        assert model.furnace_power_w == pytest.approx(0.0)
+
+    def test_no_zone_config_keeps_furnace_power_zero(self):
+        rc = RoomConfig.from_legacy_config(
+            "bedroom1",
+            {"zone": "Residential", "target_temp": 21,
+             "heater_power": 1500, "thermal_mass": 0.07,
+             "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel.from_room_config(rc)
+        assert model.furnace_power_w == pytest.approx(0.0)
+
+    def test_furnace_room_heats_faster_than_electric(self):
+        """A furnace-equipped room should warm more than an electric-only room per step."""
+        rc = RoomConfig.from_legacy_config(
+            "bedroom1",
+            {"zone": "Residential", "target_temp": 21,
+             "heater_power": 1500, "thermal_mass": 0.07,
+             "heating_efficiency": 0.85},
+        )
+        elec_model = PhysicsRoomThermalModel.from_room_config(rc)
+        furn_model = PhysicsRoomThermalModel.from_room_config(
+            rc, zone_config=self._residential_zone(), num_zone_rooms=2
+        )
+        T_start, T_out = 15.0, 5.0
+        T_elec = elec_model.step(T_start, T_out, heating_power=1.0, furnace_heating_power=0.0)
+        T_furn = furn_model.step(T_start, T_out, heating_power=0.0, furnace_heating_power=1.0)
+        assert T_furn > T_elec
+
+
+class TestHouseSimulatorHeatSourceRouting:
+    """HouseSimulator must dispatch the action to the right heat input."""
+
+    def _make_simulator_with_sources(self) -> tuple:
+        rc_elec = RoomConfig.from_legacy_config(
+            "office",
+            {"zone": "Work", "target_temp": 21, "heater_power": 1000,
+             "thermal_mass": 0.05, "heating_efficiency": 0.85},
+        )
+        rc_furn = RoomConfig.from_legacy_config(
+            "bedroom",
+            {"zone": "Residential", "target_temp": 21, "heater_power": 1500,
+             "thermal_mass": 0.07, "heating_efficiency": 0.85},
+        )
+        zone = ZoneConfig(zone_id="Residential", has_furnace=True,
+                          furnace_btu_per_hour=60_000.0, furnace_efficiency=0.80)
+
+        model_elec = PhysicsRoomThermalModel.from_room_config(rc_elec)
+        model_furn = PhysicsRoomThermalModel.from_room_config(
+            rc_furn, zone_config=zone, num_zone_rooms=1
+        )
+
+        sim = HouseSimulator(
+            room_configs={"office": rc_elec, "bedroom": rc_furn},
+            thermal_models={"office": model_elec, "bedroom": model_furn},
+        )
+        return sim, rc_elec, rc_furn
+
+    def _state(self, heat_sources: dict) -> SimulationState:
+        return SimulationState(
+            timestamp=datetime(2026, 3, 12, 2, 0),  # night – no solar
+            outdoor_temp=5.0,
+            room_temperatures={"office": 15.0, "bedroom": 15.0},
+            heating_actions={"office": HeatingAction.OFF, "bedroom": HeatingAction.OFF},
+            occupancy={"office": 0.0, "bedroom": 0.0},
+            heat_sources=heat_sources,
+        )
+
+    def test_electric_source_routed_to_electric_input(self):
+        sim, _, _ = self._make_simulator_with_sources()
+        state = self._state({"office": HeatSourceType.ELECTRIC})
+        next_state = sim.step(state, {"office": HeatingAction.COMFORT})
+        assert next_state.room_temperatures["office"] > 15.0
+
+    def test_furnace_source_routes_to_furnace_input(self):
+        sim, _, _ = self._make_simulator_with_sources()
+        state = self._state({"bedroom": HeatSourceType.GAS_FURNACE})
+        next_state = sim.step(state, {"bedroom": HeatingAction.COMFORT})
+        assert next_state.room_temperatures["bedroom"] > 15.0
+
+    def test_furnace_heats_more_than_electric_same_action(self):
+        """COMFORT via furnace (7 kW) should heat more than COMFORT via electric (1 kW)."""
+        sim, _, _ = self._make_simulator_with_sources()
+        elec_state = self._state({"office": HeatSourceType.ELECTRIC,
+                                  "bedroom": HeatSourceType.ELECTRIC})
+        furn_state = self._state({"office": HeatSourceType.ELECTRIC,
+                                  "bedroom": HeatSourceType.GAS_FURNACE})
+        elec_next = sim.step(elec_state, {"office": HeatingAction.OFF,
+                                          "bedroom": HeatingAction.COMFORT})
+        furn_next = sim.step(furn_state, {"office": HeatingAction.OFF,
+                                          "bedroom": HeatingAction.COMFORT})
+        assert furn_next.room_temperatures["bedroom"] > elec_next.room_temperatures["bedroom"]
+
+    def test_default_heat_source_is_electric(self):
+        """Rooms not in heat_sources dict should default to electric routing."""
+        sim, _, _ = self._make_simulator_with_sources()
+        state = self._state({})  # empty heat_sources
+        next_state = sim.step(state, {"office": HeatingAction.COMFORT})
+        assert next_state.room_temperatures["office"] > 15.0

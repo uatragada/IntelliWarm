@@ -140,9 +140,15 @@
   - fully backward-compatible `step()` / `simulate()` API (accepts same kwargs as legacy model)
 - `HouseSimulator` updated to forward `solar_irradiance_w_m2` and per-room `occupancy` into each `step()` call; solar is computed from the simulation timestamp using the built-in astronomical model
 - `HouseSimulator` now accepts `latitude_deg` and `cloud_cover` constructor parameters for site-specific solar simulation
-- `PhysicsRoomThermalModel` and `solar_irradiance_wm2` exported from `intelliwarm/models/__init__.py`
-- 29 new tests in `tests/test_thermal_physics_model.py` covering passive cooling, HVAC heating, solar gain, occupancy heat, steady-state accuracy, RC time constant, factory method, simulator integration, and solar irradiance day/night/seasonal/cloud behaviour
-- all 75 tests pass
+- `PhysicsRoomThermalModel` updated with explicit dual heat-source support:
+  - `electric_power_w` — rated electric space-heater output; `furnace_power_w` — per-room share of zone furnace
+  - `step()` gains `furnace_heating_power` kwarg; Q = Q_electric + Q_furnace + Q_solar + Q_occ
+  - `furnace_power_w` derived from `ZoneConfig` (BTU/hr × AFUE ÷ room count) via `from_room_config(zone_config, num_zone_rooms)`
+  - `steady_state_delta_t` reflects combined capacity; `hvac_power_w` kept as backward-compat alias for `electric_power_w`
+  - `simulate()` reads `furnace_heating_power` from forecast input dicts
+- `RoomThermalModel` (legacy) accepts `furnace_heating_power` kwarg and ignores it for API compatibility
+- `HouseSimulator.step()` reads `state.heat_sources` per room: `GAS_FURNACE` routes the action to `furnace_heating_power`, `ELECTRIC`/default routes to `heating_power`, ensuring the hybrid controller's source choice is faithfully simulated
+- 20 new tests added to `tests/test_thermal_physics_model.py` covering all dual-source paths, `from_room_config` with/without `ZoneConfig`, and simulator routing; 95 tests pass
 
 ---
 
