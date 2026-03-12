@@ -28,21 +28,23 @@
 - occupancy, deterministic weather fallback, and energy pricing now share one horizon contract
 - runtime optimization responses include the forecast bundle used for controller inputs
 
+### Hardware Foundation
+
+- sensor and device managers now delegate through hardware-ready backends with simulated fallback
+- application bootstrap wires adapter boundaries without pushing hardware I/O into routes or optimizers
+- focused tests cover hardware status reporting and offline-safe fallback behavior
+
 ## Next Priority Order
 
-### 1. Hardware Adapter Boundary
-
-Add sensor and HVAC actuator adapter boundaries with simulation fallback for offline-safe runtime operation.
-
-### 2. Route Modularization
+### 1. Route Modularization
 
 Refactor `app.py` into thin Flask route modules that delegate to services.
 
-### 3. Typed Config Evolution
+### 2. Typed Config Evolution
 
 Layer typed config validation on top of `configs/config.yaml` without breaking the current runtime.
 
-### 4. Persistence And Reporting
+### 3. Persistence And Reporting
 
 Extend the current SQLite layer with richer repositories and report-generation support.
 

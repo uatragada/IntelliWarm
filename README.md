@@ -14,6 +14,7 @@ Current completed foundations:
 - typed simulation primitives in `intelliwarm/data/models.py`
 - explainable baseline controller in `intelliwarm/control/baseline_controller.py`
 - aligned forecast bundle service in `intelliwarm/services/forecast_bundle.py`
+- hardware-ready sensor and actuator backends with simulation fallback
 - deterministic multi-room simulation in `intelliwarm/models/simulator.py`
 - thermal step and simulate APIs in `intelliwarm/models/thermal_model.py`
 - timestamp-aware occupancy prediction in `intelliwarm/prediction/occupancy_model.py`
@@ -106,10 +107,9 @@ The repo now includes explicit instructions and prompts for that flow.
 
 ## Current Priority Queue
 
-1. Hardware integration boundary for real sensors and HVAC actuators.
-2. Route modularization into thin Flask modules.
-3. Typed config evolution on top of `configs/config.yaml`.
-4. Runtime safety and observability improvements for live deployments.
+1. Route modularization into thin Flask modules.
+2. Typed config evolution on top of `configs/config.yaml`.
+3. Runtime safety and observability improvements for live deployments.
 
 ## Testing
 

@@ -2,6 +2,18 @@
 Sensors Module Exports
 """
 
-from .sensor_manager import SensorManager, TemperatureSensor, OccupancySensor
+from .sensor_manager import (
+    HardwareSensorBackend,
+    OccupancySensor,
+    SensorManager,
+    SimulatedSensorBackend,
+    TemperatureSensor,
+)
 
-__all__ = ["SensorManager", "TemperatureSensor", "OccupancySensor"]
+__all__ = [
+    "HardwareSensorBackend",
+    "OccupancySensor",
+    "SensorManager",
+    "SimulatedSensorBackend",
+    "TemperatureSensor",
+]

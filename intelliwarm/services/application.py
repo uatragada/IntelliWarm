@@ -65,8 +65,12 @@ def create_runtime_bootstrap(
 
     resolved_database_path = _resolve_database_path(project_root, database_path or config.database_path)
     database = Database(str(resolved_database_path))
-    sensor_manager = SensorManager()
-    device_controller = DeviceController()
+    default_device_id = config.state.devices.thermostat_id or config.state.devices.smart_plug_id
+    sensor_manager = SensorManager.with_hardware_fallback()
+    device_controller = DeviceController.with_hardware_fallback(
+        enable_hardware=config.enable_device_control,
+        default_device_id=default_device_id,
+    )
     energy_service = EnergyPriceService(config.electricity_price, config.gas_price)
     forecast_service = ForecastBundleService(energy_service=energy_service)
     scheduler = SystemScheduler()

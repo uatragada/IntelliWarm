@@ -26,8 +26,8 @@ The current repo should be treated as an incremental architecture, not a greenfi
 
 ### Integration Layer
 
-- `intelliwarm/sensors/sensor_manager.py`: simulated sensor registry
-- `intelliwarm/control/device_controller.py`: simulated heater/device control
+- `intelliwarm/sensors/sensor_manager.py`: sensor backend boundary with hardware-ready fallback adapters
+- `intelliwarm/control/device_controller.py`: HVAC actuation backend boundary with simulated fallback
 - `intelliwarm/pricing/energy_price_fetcher.py`: static and time-of-use pricing service
 
 ### Persistence Layer

@@ -2,6 +2,8 @@
 Tests for Flask app bootstrap and config-backed startup.
 """
 
+from intelliwarm.control import HardwareDeviceBackend
+from intelliwarm.sensors import HardwareSensorBackend
 from intelliwarm.services import create_app, create_runtime_bootstrap
 
 
@@ -52,6 +54,8 @@ def test_runtime_bootstrap_loads_configured_rooms(tmp_path):
     assert bootstrap.runtime.room_names == ["office"]
     assert bootstrap.runtime.zones == [{"name": "Work", "description": "Workspace"}]
     assert bootstrap.database.db_path.endswith("runtime.db")
+    assert isinstance(bootstrap.sensor_manager.backend, HardwareSensorBackend)
+    assert isinstance(bootstrap.device_controller.backend, HardwareDeviceBackend)
 
 
 def test_create_app_registers_runtime_and_routes(tmp_path):

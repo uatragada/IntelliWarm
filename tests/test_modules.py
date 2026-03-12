@@ -15,8 +15,8 @@ from intelliwarm.models import RoomThermalModel
 from intelliwarm.optimizer import MPCController, CostFunction
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.pricing import EnergyPriceService
-from intelliwarm.sensors import SensorManager
-from intelliwarm.control import BaselineController, DeviceController
+from intelliwarm.sensors import HardwareSensorBackend, SensorManager
+from intelliwarm.control import BaselineController, DeviceController, HardwareDeviceBackend
 from intelliwarm.core import SystemConfig
 from intelliwarm.services import ForecastBundleService
 
@@ -380,6 +380,21 @@ class TestSensorManager:
         assert state["temperature"] == 21.5
         assert state["occupancy"] == False
 
+    def test_hardware_sensor_backend_falls_back_to_simulation(self):
+        backend = HardwareSensorBackend(
+            temperature_reader=lambda room_name: None,
+            occupancy_reader=lambda room_name: (_ for _ in ()).throw(RuntimeError("offline")),
+        )
+        manager = SensorManager(backend=backend)
+        manager.register_temperature_sensor("bedroom", 20.0)
+        manager.register_occupancy_sensor("bedroom", True)
+
+        state = manager.get_room_state("bedroom")
+
+        assert state["temperature"] == 20.0
+        assert state["occupancy"] is True
+        assert state["sensor_source"] == "simulated_fallback"
+
 
 # ============================================================================
 # Device Control Tests
@@ -413,6 +428,40 @@ class TestDeviceController:
         status = controller.get_device_status("bedroom")
         assert status["power_level"] == 0.0
         assert status["is_on"] == False
+
+    def test_hardware_device_backend_reports_hardware_status(self):
+        commands = []
+        controller = DeviceController.with_hardware_fallback(
+            enable_hardware=True,
+            default_device_id="thermostat-1",
+            command_writer=lambda device_id, level: commands.append((device_id, level)),
+            status_reader=lambda device_id: {
+                "is_on": True,
+                "power_level": 0.5,
+                "power_watts": 750.0,
+            },
+        )
+        controller.register_device("bedroom")
+
+        controller.set_heater("bedroom", 0.5)
+        status = controller.get_device_status("bedroom")
+
+        assert commands == [("thermostat-1", 0.5)]
+        assert status["control_source"] == "hardware"
+        assert status["device_id"] == "thermostat-1"
+
+    def test_hardware_device_backend_falls_back_to_simulation(self):
+        controller = DeviceController.with_hardware_fallback(
+            enable_hardware=True,
+            default_device_id="thermostat-1",
+        )
+        controller.register_device("bedroom")
+
+        controller.set_heater("bedroom", 0.4)
+        status = controller.get_device_status("bedroom")
+
+        assert status["power_level"] == 0.4
+        assert status["control_source"] == "simulated_fallback"
 
 
 if __name__ == "__main__":
