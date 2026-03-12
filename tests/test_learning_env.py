@@ -9,7 +9,14 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from intelliwarm.data import RoomConfig
-from intelliwarm.learning import IntelliWarmMultiRoomEnv, IntelliWarmRoomEnv, SyntheticScenarioGenerator
+from intelliwarm.data import HeatSourceType, HeatingAction
+from intelliwarm.learning import (
+    IntelliWarmMultiRoomEnv,
+    IntelliWarmRoomEnv,
+    SyntheticScenarioGenerator,
+    constant_policy,
+    evaluate_policy,
+)
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.pricing import EnergyPriceService, StaticPriceProvider
@@ -111,6 +118,10 @@ def test_multi_room_env_reset_returns_padded_multi_room_observation():
     assert info["scenario_name"] == "winter-workday"
     assert info["zone_names"] == ["Residential", "Work"]
     assert info["room_names"] == ["bedroom", "living_room", "office"]
+    assert info["active_zones"] == 2
+    assert info["max_zones"] == 3
+    assert info["active_rooms"] == 3
+    assert info["max_rooms"] == 3
 
 
 def test_multi_room_env_applies_zone_furnace_to_all_rooms_in_zone():
@@ -148,3 +159,38 @@ def test_multi_room_env_is_deterministic_for_same_scenario_and_actions():
 
     assert [step[1] for step in first_rollout] == [step[1] for step in second_rollout]
     assert [step[4]["total_cost"] for step in first_rollout] == [step[4]["total_cost"] for step in second_rollout]
+
+
+def test_constant_policy_uses_env_action_layout():
+    env = IntelliWarmMultiRoomEnv(SyntheticScenarioGenerator().default_scenarios())
+    _, info = env.reset(options={"scenario_name": "weekend-family"})
+
+    policy = constant_policy(
+        room_action=HeatingAction.COMFORT,
+        zone_source=HeatSourceType.GAS_FURNACE,
+    )
+    action = policy(None, info)
+
+    assert action == [1, 1, 1, 2, 2, 2]
+
+
+def test_evaluate_policy_rolls_up_metrics_across_scenarios():
+    scenarios = SyntheticScenarioGenerator().default_scenarios()
+    env = IntelliWarmMultiRoomEnv(scenarios)
+
+    summary = evaluate_policy(
+        env,
+        constant_policy(room_action=HeatingAction.ECO, zone_source=HeatSourceType.ELECTRIC),
+        scenario_names=["winter-workday", "weekend-family"],
+        max_steps=2,
+    )
+
+    assert summary.scenario_count == 2
+    assert all(result.steps == 2 for result in summary.scenario_results)
+    assert summary.total_cost > 0
+    assert summary.total_reward < 0
+    assert summary.total_comfort_violation >= 0
+    assert [result.scenario_name for result in summary.scenario_results] == [
+        "winter-workday",
+        "weekend-family",
+    ]

@@ -114,6 +114,13 @@
 - scenario resets can cycle through different training situations without introducing randomness
 - regression coverage verifies scenario generation, zone furnace propagation, and deterministic multi-room rollouts
 
+### Deterministic Policy Evaluation Utilities
+
+- `intelliwarm/learning/evaluation.py` adds reusable helpers for rolling a policy across one or more named scenarios
+- evaluation summaries aggregate total reward, energy cost, comfort violation, and final zone heat-source decisions per scenario
+- constant-policy helpers provide a simple baseline contract for future learned-policy or heuristic comparisons
+- regression coverage verifies action-layout handling and multi-scenario metric aggregation
+
 ---
 
 ## Active Next Priority Order
@@ -138,9 +145,9 @@ The dashboard now exposes the live hybrid heating choice to operators. The next 
 
 ### 3. RL Evaluation And Policy Comparison
 
-Future ML control work should now build on the implemented room and multi-room training environments.
+Future ML control work should now build on the implemented room and multi-room training environments plus deterministic evaluation helpers.
 
-- Add evaluation scripts that compare learned policies against hybrid and MPC baselines on the deterministic scenario library
+- Add CLI/scripts that compare learned policies against hybrid and MPC baselines on the deterministic scenario library
 - Reuse `OFF`, `ECO`, `COMFORT`, and `PREHEAT` actions so trained policies stay compatible with the live runtime
 - Support both pure simulation training and offline evaluation against recorded scenarios
 - Keep learned-policy execution behind the same runtime and safety boundaries as other controllers

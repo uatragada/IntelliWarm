@@ -463,6 +463,14 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             "scenario_name": self._scenario.name,
             "room_names": list(self._room_names),
             "zone_names": list(self._zone_names),
+            "active_rooms": len(self._room_names),
+            "active_zones": len(self._zone_names),
+            "max_rooms": self.max_rooms,
+            "max_zones": self.max_zones,
+            "zone_has_furnace": {
+                zone_name: self._scenario.zone_configs[zone_name].has_furnace
+                for zone_name in self._zone_names
+            },
         }
 
     def step(self, action: Sequence[int]):
@@ -554,5 +562,13 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             "invalid_source_penalty": invalid_source_penalty,
             "room_names": list(self._room_names),
             "zone_names": list(self._zone_names),
+            "active_rooms": len(self._room_names),
+            "active_zones": len(self._zone_names),
+            "max_rooms": self.max_rooms,
+            "max_zones": self.max_zones,
+            "zone_has_furnace": {
+                zone_name: self._scenario.zone_configs[zone_name].has_furnace
+                for zone_name in self._zone_names
+            },
         }
         return self._observation(), reward, terminated, truncated, info
