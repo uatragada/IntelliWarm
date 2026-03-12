@@ -1,0 +1,97 @@
+# IntelliWarm Configuration File
+# Define rooms, zones, thermal properties, comfort settings, and optimization parameters
+
+# System Settings
+system:
+  debug: true
+  logging_level: INFO
+  poll_interval: 30  # seconds
+  optimization_horizon: 24  # hours
+  max_optimization_time: 2  # seconds
+
+# Comfort Constraints
+comfort:
+  min_temperature: 18  # Celsius
+  max_temperature: 24
+  default_target: 21
+  discomfort_penalty: 50  # per degree violation
+
+# Optimization Penalties
+optimization:
+  comfort_weight: 1.0
+  switching_weight: 0.5  # penalty for turning heater on/off
+  energy_weight: 1.0
+
+# Energy Prices (default)
+energy:
+  electricity_price: 0.12  # $/kWh
+  gas_price: 5.0  # $/therm
+
+# Rooms Configuration
+rooms:
+  bedroom1:
+    zone: "Residential"
+    room_size: 150  # sq ft
+    target_temp: 21
+    heater_power: 1500  # watts
+    thermal_mass: 0.005  # cooling coefficient
+    heating_efficiency: 0.85
+    occupancy_schedule: "9-18"
+    
+  living_room:
+    zone: "Residential"
+    room_size: 300
+    target_temp: 20
+    heater_power: 2000
+    thermal_mass: 0.003
+    heating_efficiency: 0.85
+    occupancy_schedule: "18-23"
+
+  office:
+    zone: "Work"
+    room_size: 100
+    target_temp: 21
+    heater_power: 1000
+    thermal_mass: 0.008
+    heating_efficiency: 0.85
+    occupancy_schedule: "8-17"
+
+# Zones Configuration
+zones:
+  Residential:
+    description: "Living and sleeping areas"
+    priority: 1
+    
+  Work:
+    description: "Office and study spaces"
+    priority: 2
+
+# Database Configuration
+database:
+  type: "sqlite"  # or "postgresql"
+  path: "intelliwarm.db"
+  # For PostgreSQL:
+  # host: "localhost"
+  # port: 5432
+  # user: "intelliwarm"
+  # password: "${DB_PASSWORD}"
+  # database: "intelliwarm"
+
+# Weather API (Optional)
+weather_api:
+  enabled: false
+  provider: "openweathermap"
+  api_key: "${WEATHER_API_KEY}"
+  update_interval: 3600  # seconds
+
+# Device Control
+devices:
+  enable_control: false  # true = actual device control, false = simulation
+  smart_plug_id: "plug_001"
+  thermostat_id: "therm_001"
+
+# Logging
+logging:
+  file: "logs/intelliwarm.log"
+  max_size: "10MB"
+  backup_count: 5

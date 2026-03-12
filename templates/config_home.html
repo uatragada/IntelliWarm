@@ -2,128 +2,158 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8" />
-    <title>Configure Home - IntelliWarm</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', sans-serif;
-            background: #f0f2f5;
-            margin: 0;
-        }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IntelliWarm — Configure Home</title>
+  <style>
+    :root {
+      --ink: #0d1b2a; --ink-soft: #1b263b;
+      --paper: #f4f6f9; --card: #ffffff;
+      --border: #e2e8f0; --accent: #e76f51; --muted: #64748b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--paper); min-height: 100vh; }
 
-        header {
-            background: #2c3e50;
-            color: white;
-            padding: 20px;
-            text-align: center;
-        }
+    header {
+      background: linear-gradient(120deg, var(--ink) 0%, var(--ink-soft) 100%);
+      color: #fff; padding: 16px 24px; border-bottom: 3px solid var(--accent);
+    }
+    .header-inner { max-width: 900px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .brand { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.4px; }
+    .brand em { font-style: normal; color: #f4a261; }
 
-        .top-nav {
-            text-align: center;
-            margin: 10px;
-        }
+    nav { background: var(--card); border-bottom: 1px solid var(--border); }
+    .nav-inner { max-width: 900px; margin: 0 auto; display: flex; padding: 0 24px; }
+    nav a {
+      text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem;
+      padding: 12px 14px; border-bottom: 3px solid transparent;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    nav a:hover { color: var(--ink); }
+    nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-        .top-nav a {
-            margin: 0 15px;
-            text-decoration: none;
-            color: #2c3e50;
-            font-weight: bold;
-        }
+    .page-wrap { max-width: 900px; margin: 0 auto; padding: 32px 20px 60px; display: flex; flex-direction: column; gap: 20px; }
 
-        .container {
-            max-width: 600px;
-            background: white;
-            margin: 30px auto;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-        }
+    .form-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 16px; padding: 26px 28px;
+      box-shadow: 0 2px 14px rgba(13,27,42,0.07);
+    }
+    .form-card h2 {
+      font-size: 1rem; font-weight: 800; color: var(--ink-soft);
+      margin-bottom: 18px; padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-label {
+      font-size: 0.75rem; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin: 18px 0 10px;
+    }
+    .section-label:first-of-type { margin-top: 0; }
 
-        label {
-            display: block;
-            margin-top: 15px;
-            margin-bottom: 5px;
-        }
+    .field { margin-bottom: 14px; }
+    label { display: block; font-size: 0.82rem; font-weight: 600; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.4px; }
+    input, textarea, select {
+      width: 100%; padding: 9px 12px;
+      border-radius: 8px; border: 1.5px solid var(--border);
+      font-size: 0.9rem; color: var(--ink); background: var(--paper);
+      transition: border-color 0.15s; outline: none; font-family: inherit;
+    }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent); background: #fff; }
+    textarea { resize: vertical; min-height: 72px; }
 
-        input,
-        textarea {
-            width: 100%;
-            padding: 10px;
-            border-radius: 6px;
-            border: 1px solid #ccc;
-        }
+    .submit-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      margin-top: 8px; padding: 10px 24px;
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 8px;
+      font-weight: 700; font-size: 0.92rem; cursor: pointer;
+      transition: background 0.1s, transform 0.08s;
+    }
+    .submit-btn:hover { background: #d95d39; transform: translateY(-1px); }
 
-        button {
-            margin-top: 15px;
-            padding: 10px 20px;
-            background-color: #2c3e50;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-        }
+    .zones-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    .zone-item {
+      background: var(--paper); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px;
+      display: flex; align-items: baseline; gap: 8px;
+    }
+    .zone-name { font-weight: 700; font-size: 0.9rem; }
+    .zone-desc { font-size: 0.82rem; color: var(--muted); }
+    .empty-note { color: var(--muted); font-size: 0.88rem; }
 
-        button:hover {
-            background-color: #1b2734;
-        }
-
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: #777;
-        }
-    </style>
+    footer { text-align: center; color: var(--muted); font-size: 0.82rem; padding: 20px; border-top: 1px solid var(--border); margin-top: 12px; }
+  </style>
 </head>
 
 <body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">Intelli<em>Warm</em></div>
+    </div>
+  </header>
 
-    <header>
-        <h1>Set Up Home</h1>
-    </header>
+  <nav>
+    <div class="nav-inner">
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('add_room') }}">Add Room</a>
+      <a href="{{ url_for('config_home') }}" class="active">Configure Home</a>
+      <a href="{{ url_for('demo') }}">Demo Timeline</a>
+    </div>
+  </nav>
 
-    <div class="top-nav">
-        <a href="{{ url_for('dashboard') }}">Dashboard</a>
-        <a href="{{ url_for('add_room') }}">Add Room</a>
-        <a href="{{ url_for('config_home') }}">Configure Home</a>
+  <div class="page-wrap">
+
+    <!-- Settings form -->
+    <div class="form-card">
+      <h2>Home Configuration</h2>
+      <form method="POST">
+        <div class="section-label">Create a Zone</div>
+        <div class="field">
+          <label for="zoneName">Zone Name</label>
+          <input type="text" name="zoneName" id="zoneName" placeholder="e.g. Upstairs Bedrooms">
+        </div>
+        <div class="field">
+          <label for="zoneDescription">Zone Description</label>
+          <textarea name="zoneDescription" id="zoneDescription" placeholder="Optional description…"></textarea>
+        </div>
+
+        <div class="section-label">Utility Prices</div>
+        <div class="field">
+          <label for="electricityPrice">Electricity Price ($/kWh)</label>
+          <input type="number" step="0.01" name="electricityPrice" id="electricityPrice"
+            value="{{ rates.electricity_price or '' }}" placeholder="e.g. 0.12">
+        </div>
+        <div class="field">
+          <label for="gasPrice">Gas Price ($/therm)</label>
+          <input type="number" step="0.01" name="gasPrice" id="gasPrice"
+            value="{{ rates.gas_price or '' }}" placeholder="e.g. 5.00">
+        </div>
+
+        <button class="submit-btn" type="submit">Save Settings</button>
+      </form>
     </div>
 
-    <div class="container">
-        <form method="POST">
-            <h3>Create Zone</h3>
-            <label for="zoneName">Zone Name:</label>
-            <input type="text" name="zoneName">
-
-            <label for="zoneDescription">Zone Description:</label>
-            <textarea name="zoneDescription"></textarea>
-
-            <h3>Set Utility Prices</h3>
-            <label for="electricityPrice">Electricity Price ($/kWh):</label>
-            <input type="number" step="0.01" name="electricityPrice" value="{{ rates.electricity_price or '' }}">
-
-            <label for="gasPrice">Gas Price ($/therm):</label>
-            <input type="number" step="0.01" name="gasPrice" value="{{ rates.gas_price or '' }}">
-
-            <button type="submit">Save Settings</button>
-        </form>
+    <!-- Existing zones list -->
+    <div class="form-card">
+      <h2>Existing Zones</h2>
+      {% if zones %}
+      <ul class="zones-list">
+        {% for z in zones %}
+        <li class="zone-item">
+          <span class="zone-name">{{ z.name }}</span>
+          <span class="zone-desc">{{ z.description or 'No description' }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty-note">No zones created yet. Use the form above to add one.</p>
+      {% endif %}
     </div>
 
-    <div class="container">
-        <h3>Existing Zones</h3>
-        {% if zones %}
-        <ul>
-            {% for z in zones %}
-            <li><strong>{{ z.name }}</strong>: {{ z.description or 'No description' }}</li>
-            {% endfor %}
-        </ul>
-        {% else %}
-        <p>No zones created yet.</p>
-        {% endif %}
-    </div>
+  </div>
 
-    <div class="footer">
-        IntelliWarm © 2025 • Nico Bartello & Uday Atragada
-    </div>
-
+  <footer>IntelliWarm &nbsp;·&nbsp; © 2025 Nico Bartello &amp; Uday Atragada</footer>
 </body>
 
 </html>

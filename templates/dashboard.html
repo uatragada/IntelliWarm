@@ -3,75 +3,119 @@
 
 <head>
   <meta charset="UTF-8" />
-  <title>IntelliWarm Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IntelliWarm — Dashboard</title>
   <script>
-    // Refresh the page every 60 seconds
-    setTimeout(function() {
-        window.location.reload();
-    }, 60000);
+    // Auto-refresh every 60 seconds
+    setTimeout(function() { window.location.reload(); }, 60000);
   </script>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Segoe+UI&display=swap">
   <style>
-    body {
-      font-family: 'Segoe UI', sans-serif;
-      margin: 0;
-      background: #f0f2f5;
+    :root {
+      --ink: #0d1b2a;
+      --ink-soft: #1b263b;
+      --paper: #f4f6f9;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --accent: #e76f51;
+      --muted: #64748b;
+      --z0: #3b82f6; --z1: #f59e0b; --z2: #10b981; --z3: #8b5cf6;
     }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--paper); min-height: 100vh; }
 
     header {
-      background: #2c3e50;
-      color: white;
-      padding: 20px;
-      text-align: center;
+      background: linear-gradient(120deg, var(--ink) 0%, var(--ink-soft) 100%);
+      color: #fff;
+      padding: 16px 24px;
+      border-bottom: 3px solid var(--accent);
     }
-
-    .top-nav {
-      text-align: center;
-      margin: 10px;
+    .header-inner {
+      max-width: 1300px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
     }
+    .brand { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.4px; }
+    .brand em { font-style: normal; color: #f4a261; }
+    .header-sub { font-size: 0.82rem; opacity: 0.6; }
 
-    .top-nav a {
-      margin: 0 15px;
-      text-decoration: none;
-      color: #2c3e50;
-      font-weight: bold;
+    nav { background: var(--card); border-bottom: 1px solid var(--border); }
+    .nav-inner { max-width: 1300px; margin: 0 auto; display: flex; padding: 0 24px; }
+    nav a {
+      text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem;
+      padding: 12px 14px; border-bottom: 3px solid transparent;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    nav a:hover { color: var(--ink); }
+    nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .container { max-width: 1300px; margin: 0 auto; padding: 24px 20px 48px; }
+
+    .page-title {
+      font-size: 1.1rem; font-weight: 800; color: var(--ink-soft);
+      margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
+    }
+    .refresh-badge {
+      font-size: 0.72rem; font-weight: 600; background: #f1f5f9;
+      color: var(--muted); border: 1px solid var(--border);
+      border-radius: 20px; padding: 2px 10px;
     }
 
     .dashboard {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 20px;
-      padding: 20px;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 14px;
     }
 
     .room-card {
-      background: white;
-      border-radius: 10px;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-      padding: 20px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 2px 8px rgba(13,27,42,0.05);
+      transition: box-shadow 0.15s;
     }
+    .room-card:hover { box-shadow: 0 4px 16px rgba(13,27,42,0.1); }
 
     .room-title {
-      font-size: 1.2em;
-      font-weight: bold;
+      font-size: 0.95rem;
+      font-weight: 800;
+      color: var(--ink);
+      margin-bottom: 10px;
+    }
+    .room-zone {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      background: #f1f5f9;
+      color: var(--muted);
+      border-radius: 20px;
+      padding: 1px 8px;
+      margin-left: 6px;
     }
 
-    .metric {
-      margin: 8px 0;
-    }
+    .metric { margin: 6px 0; font-size: 0.88rem; color: var(--muted); }
+    .metric strong { color: var(--ink); font-weight: 700; }
 
-    .metric span {
-      font-weight: bold;
+    .pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 20px;
+      font-size: 0.74rem; font-weight: 700;
     }
+    .pill-occupied { background: #d1fae5; color: #065f46; }
+    .pill-vacant   { background: #f1f5f9; color: #64748b; }
 
-    .status-on {
-      color: green;
-      font-weight: bold;
+    .status-on { color: #059669; font-weight: 700; }
+    .status-off { color: #94a3b8; font-weight: 700; }
+
+    .empty-state {
+      text-align: center; padding: 60px 20px;
+      color: var(--muted); font-size: 0.95rem;
     }
+    .empty-state a { color: var(--accent); text-decoration: none; font-weight: 700; }
 
-    .status-off {
-      color: red;
-      font-weight: bold;
+    footer {
+      text-align: center; color: var(--muted); font-size: 0.82rem;
+      padding: 20px; border-top: 1px solid var(--border); margin-top: 12px;
     }
 
     .footer {
@@ -84,35 +128,56 @@
 
 <body>
   <header>
-    <h1>IntelliWarm Dashboard</h1>
+    <div class="header-inner">
+      <div class="brand">Intelli<em>Warm</em></div>
+      <div class="header-sub">Live room status &amp; occupancy</div>
+    </div>
   </header>
 
-  <div class="top-nav">
-    <a href="{{ url_for('dashboard') }}">Dashboard</a>
-    <a href="{{ url_for('add_room') }}">Add Room</a>
-    <a href="{{ url_for('config_home') }}">Configure Home</a>
-    <a href="{{ url_for('demo') }}">Demo</a>
-  </div>
-
-  <main class="dashboard">
-    {% for room in rooms %}
-    <div class="room-card">
-      <div class="room-title">{{ room.name }} ({{ room.zone }})</div>
-      <div class="metric">Temperature: <span>{{ room.temperature }}°F</span></div>
-      <div class="metric">Humidity: <span>{{ room.humidity }}%</span></div>
-      <div class="metric">Occupancy:
-        <span class="{{ 'status-on' if room.occupancy else 'status-off' }}">
-          {{ 'Occupied' if room.occupancy else 'Unoccupied' }}
-        </span>
-      </div>
-      <div class="metric">Heating Source: <span>{{ room.heating_source }}</span></div>
+  <nav>
+    <div class="nav-inner">
+      <a href="{{ url_for('dashboard') }}" class="active">Dashboard</a>
+      <a href="{{ url_for('add_room') }}">Add Room</a>
+      <a href="{{ url_for('config_home') }}">Configure Home</a>
+      <a href="{{ url_for('demo') }}">Demo Timeline</a>
     </div>
-    {% endfor %}
-  </main>
+  </nav>
 
-  <div class="footer">
-    IntelliWarm © 2025 • Nico Bartello & Uday Atragada
+  <div class="container">
+    <div class="page-title">
+      All Rooms
+      <span class="refresh-badge">↻ auto-refresh 60s</span>
+    </div>
+
+    {% if rooms %}
+    <div class="dashboard">
+      {% for room in rooms %}
+      <div class="room-card">
+        <div class="room-title">
+          {{ room.name }}
+          <span class="room-zone">{{ room.zone }}</span>
+        </div>
+        <div class="metric">Temperature: <strong>{{ room.temperature }}°F</strong></div>
+        <div class="metric">Humidity: <strong>{{ room.humidity }}%</strong></div>
+        <div class="metric">
+          Occupancy:
+          <span class="pill {{ 'pill-occupied' if room.occupancy else 'pill-vacant' }}">
+            {{ '● Occupied' if room.occupancy else '○ Vacant' }}
+          </span>
+        </div>
+        <div class="metric">Heating: <strong class="{{ 'status-on' if room.heating_source != 'Off' else 'status-off' }}">{{ room.heating_source }}</strong></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p>No rooms configured yet.</p>
+      <p style="margin-top:10px"><a href="{{ url_for('add_room') }}">Add your first room →</a></p>
+    </div>
+    {% endif %}
   </div>
+
+  <footer>IntelliWarm &nbsp;·&nbsp; © 2025 Nico Bartello &amp; Uday Atragada</footer>
 </body>
 
 </html>
