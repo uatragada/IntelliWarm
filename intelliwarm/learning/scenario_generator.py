@@ -4,9 +4,12 @@ Deterministic scenario generation for IntelliWarm training environments.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
+
+import numpy as np
 
 from intelliwarm.data import RoomConfig, ZoneConfig
 
@@ -249,3 +252,95 @@ class SyntheticScenarioGenerator:
             if scenario.name == name:
                 return scenario
         raise KeyError(f"Unknown scenario: {name}")
+
+    def random_scenario(
+        self,
+        room_configs: Dict[str, RoomConfig],
+        zone_configs: Dict[str, ZoneConfig],
+        *,
+        seed: Optional[int] = None,
+        horizon_hours: int = 24,
+        step_minutes: int = 60,
+        gas_price_per_therm: float = 1.20,
+    ) -> TrainingScenario:
+        """Generate a randomised but physically realistic 24-hour scenario.
+
+        Seasonal temperature baselines follow a Toronto-like climate.  Electricity
+        prices follow a time-of-use pattern with random base rate and peak
+        multiplier so the OPT policy must learn a genuine cost trade-off.
+
+        Args:
+            room_configs:         Per-room config to embed in the scenario.
+            zone_configs:         Per-zone config to embed in the scenario.
+            seed:                 Optional RNG seed for reproducibility.
+            horizon_hours:        Episode length in steps (each step = step_minutes).
+            step_minutes:         Duration of each timestep [minutes].
+            gas_price_per_therm:  Gas price applied to every hour [$].
+
+        Returns:
+            A fresh :class:`TrainingScenario` instance.
+        """
+        rng = np.random.default_rng(seed)
+
+        # ── Season & date ─────────────────────────────────────────────────────
+        month = int(rng.integers(1, 13))
+        day = int(rng.integers(1, 29))
+        # Start at midnight or early morning for a full daily cycle
+        start_hour = int(rng.choice([0, 3, 6]))
+        start_time = datetime(2026, month, day, start_hour, 0)
+
+        # Monthly mean outdoor temperature (°C) — Toronto-like climate
+        _MEAN_T = {1: -8, 2: -6, 3: 0, 4: 8, 5: 15, 6: 20,
+                   7: 23, 8: 22, 9: 17, 10: 10, 11: 3, 12: -4}
+        base_t = float(_MEAN_T[month])
+
+        # Daily cycle: trough ~6 AM, peak ~2 PM; amplitude varies
+        daily_amplitude = float(rng.uniform(4.0, 10.0))
+        outdoor_temps = []
+        for h in range(horizon_hours):
+            hour_of_day = (start_hour + h) % 24
+            cycle = daily_amplitude * math.sin(math.pi * (hour_of_day - 6) / 14)
+            noise = float(rng.normal(0, 0.6))
+            outdoor_temps.append(round(base_t + cycle + noise, 1))
+
+        # ── Electricity prices — time-of-use with random magnitude ────────────
+        base_price = float(rng.uniform(0.07, 0.14))        # off-peak base
+        peak_mult = float(rng.uniform(1.8, 3.5))           # peak multiplier
+        elec_prices = []
+        for h in range(horizon_hours):
+            hour_of_day = (start_hour + h) % 24
+            if 7 <= hour_of_day <= 9 or 17 <= hour_of_day <= 20:
+                price = base_price * peak_mult * float(rng.uniform(0.90, 1.10))
+            elif hour_of_day <= 5 or hour_of_day >= 23:
+                price = base_price * float(rng.uniform(0.75, 0.95))
+            else:
+                price = base_price * float(rng.uniform(1.1, 1.7))
+            elec_prices.append(round(price, 3))
+
+        # ── Initial temperatures: each room slightly below its comfort minimum ─
+        initial_temps = {
+            room_id: round(float(rc.target_min_temp) - float(rng.uniform(1.0, 5.0)), 1)
+            for room_id, rc in room_configs.items()
+        }
+
+        month_abbr = ["jan", "feb", "mar", "apr", "may", "jun",
+                      "jul", "aug", "sep", "oct", "nov", "dec"][month - 1]
+        scenario_id = int(rng.integers(1000, 9999)) if seed is None else seed
+        name = f"random_{month_abbr}{day:02d}_{scenario_id}"
+
+        return self.build_scenario(
+            name=name,
+            start_time=start_time,
+            room_configs=room_configs,
+            zone_configs=zone_configs,
+            initial_temperatures=initial_temps,
+            outdoor_temperatures=outdoor_temps,
+            electricity_prices=elec_prices,
+            gas_prices=[gas_price_per_therm] * horizon_hours,
+            step_minutes=step_minutes,
+            description=(
+                f"Randomised {month_abbr} scenario: "
+                f"base_T={base_t:.0f}°C, base_price=${base_price:.3f}/kWh, "
+                f"peak_mult={peak_mult:.1f}x"
+            ),
+        )
