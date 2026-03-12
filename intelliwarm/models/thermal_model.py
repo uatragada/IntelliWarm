@@ -1,10 +1,9 @@
 """
-Thermal Model Module
-Predicts room temperature based on heating actions
+Thermal model module.
 """
 
 import logging
-from typing import List, Tuple
+from typing import Dict, Iterable, List, Tuple
 import numpy as np
 
 
@@ -35,6 +34,41 @@ class RoomThermalModel:
         self.alpha = alpha
         self.beta = beta
         self.logger = logging.getLogger("IntelliWarm.ThermalModel")
+
+    def step(
+        self,
+        current_temp: float,
+        outside_temp: float,
+        heating_power: float,
+        dt_minutes: int = 60,
+    ) -> float:
+        """Advance the thermal model by one timestep."""
+        dt_scale = dt_minutes / 60.0
+        temperature_delta = (
+            (self.alpha * heating_power) - (self.beta * (current_temp - outside_temp))
+        ) * dt_scale
+        return current_temp + temperature_delta
+
+    def simulate(
+        self,
+        initial_temp: float,
+        forecast_inputs: Iterable[Dict[str, float]],
+        dt_minutes: int = 60,
+    ) -> List[float]:
+        """Simulate temperature evolution for a sequence of forecast inputs."""
+        temperatures: List[float] = []
+        current_temp = initial_temp
+
+        for forecast_step in forecast_inputs:
+            current_temp = self.step(
+                current_temp=current_temp,
+                outside_temp=float(forecast_step["outdoor_temp"]),
+                heating_power=float(forecast_step["heating_power"]),
+                dt_minutes=dt_minutes,
+            )
+            temperatures.append(current_temp)
+
+        return temperatures
     
     def predict_temperature(
         self,
@@ -55,19 +89,11 @@ class RoomThermalModel:
         Returns:
             List of predicted temperatures
         """
-        predictions = [current_temp]
-        
-        for h in range(min(hours, len(heating_actions))):
-            T_t = predictions[-1]
-            H_t = heating_actions[h]
-            
-            # Heating effect + cooling effect
-            dT = self.alpha * H_t - self.beta * (T_t - outside_temp)
-            T_next = T_t + dT
-            
-            predictions.append(T_next)
-        
-        return predictions[:-1]  # Return predictions for each hour
+        forecast_inputs = [
+            {"outdoor_temp": outside_temp, "heating_power": heating_actions[h]}
+            for h in range(min(hours, len(heating_actions)))
+        ]
+        return self.simulate(current_temp, forecast_inputs, dt_minutes=60)
     
     def estimate_parameters(self, historical_data: List[Tuple[float, float, float]]):
         """

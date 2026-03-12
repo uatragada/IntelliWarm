@@ -1,4 +1,4 @@
-# Quick Start Guide
+# Quick Start
 
 ## 1. Install Dependencies
 
@@ -6,167 +6,71 @@
 pip install -r requirements.txt
 ```
 
-## 2. Initialize Configuration
+## 2. Run Focused Verification First
 
-The system uses `configs/config.yaml` for all settings. Key sections:
-
-```yaml
-# Comfort levels
-comfort:
-  min_temperature: 18
-  max_temperature: 24
-  default_target: 21
-
-# Rooms you want to optimize
-rooms:
-  bedroom:
-    target_temp: 21
-    occupancy_schedule: "9-18"  # 9am to 6pm
-
-# Energy prices
-energy:
-  electricity_price: 0.12  # $/kWh
-  gas_price: 5.0           # $/therm
+```bash
+pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules.py
 ```
 
-## 3. Run Examples
+This verifies the current foundations:
 
-Test the system without the web UI:
+- runtime orchestration
+- thermal model behavior
+- occupancy prediction
+- deterministic simulation
+- current MPC path
+
+## 3. Start The App
+
+```bash
+python app.py
+```
+
+Then open `http://localhost:5000`.
+
+## 4. Use The Repo As A Simulation Platform
+
+Run examples without the web UI:
 
 ```bash
 python examples.py
 ```
 
-This demonstrates:
-- Basic optimization
-- Multi-room setups
-- Thermal model learning
-- Cost analysis
+## 5. Key Files To Know
 
-## 4. Start Web Dashboard
+- `configs/config.yaml`: current configuration source
+- `intelliwarm/services/runtime.py`: runtime orchestration
+- `intelliwarm/data/models.py`: typed room, action, and simulation models
+- `intelliwarm/models/thermal_model.py`: thermal step and simulate APIs
+- `intelliwarm/models/simulator.py`: deterministic house simulator
+- `intelliwarm/prediction/occupancy_model.py`: schedule and timestamp prediction
 
-```bash
-python app.py
-```
+## 6. Copilot CLI Autopilot
 
-Then open: **http://localhost:5000**
-
-### Dashboard Features
-
-- Add rooms
-- Configure zones and energy prices
-- Load demo data from CSV
-- View room status
-- Monitor optimization plans
-
-## 5. Run Tests
+Use this from the repo root:
 
 ```bash
-pip install pytest
-pytest tests/
+copilot --autopilot --yolo --max-autopilot-continues 20
 ```
 
-## 6. Explore the Code
+Before doing that, ensure the agent can read:
 
-### Key Modules
+1. `AGENTS.md`
+2. `.github/copilot-instructions.md`
+3. `docs/roadmap.md`
+4. `docs/architecture.md`
+5. `docs/srs.md`
 
-| Module | File | Purpose |
-|--------|------|---------|
-| Thermal Model | `intelliwarm/models/thermal_model.py` | Physics-based temperature prediction |
-| Optimizer | `intelliwarm/optimizer/mpc_controller.py` | Cost minimization engine |
-| Sensors | `intelliwarm/sensors/sensor_manager.py` | Data collection interface |
-| Database | `intelliwarm/storage/database.py` | Data persistence |
+## 7. Troubleshooting
 
-### Example: Manual Optimization
+### Import problems
 
-```python
-from intelliwarm.core import SystemConfig
-from intelliwarm.models import RoomThermalModel
-from intelliwarm.optimizer import MPCController, CostFunction
+Run commands from the repo root.
 
-# Load config
-config = SystemConfig("configs/config.yaml")
+### Database reset
 
-# Create model
-model = RoomThermalModel("bedroom", alpha=0.1, beta=0.05)
+Delete `intelliwarm.db` and start the app again if you need a clean local database.
 
-# Create optimizer
-optimizer = MPCController(config, model)
+### Test failures after model changes
 
-# Compute optimal plan
-plan = optimizer.compute_optimal_plan(
-    room_name="bedroom",
-    current_temp=18.0,
-    outside_temp=5.0,
-    target_temp=21.0,
-    energy_prices=[0.12] * 24,
-    occupancy_probs=[0.8]*12 + [0.1]*12,
-    current_action=0.0
-)
-
-print(f"Next action: {plan['next_action']:.0%}")  # 0-100%
-print(f"Cost: ${plan['total_cost']:.2f}")
-```
-
-## 7. Architecture Overview
-
-```
-Sensors (hardware)
-    ↓
-SensorManager (read data)
-    ↓
-RoomThermalModel (predict temperature)
-    ↓
-OccupancyPredictor (forecast occupancy)
-    ↓
-EnergyPriceService (get price forecast)
-    ↓
-MPCController (optimize)
-    ↓
-DeviceController (send commands)
-    ↓
-Database (log everything)
-```
-
-## Next Steps
-
-1. **Add real rooms** - Configure actual room properties in `config.yaml`
-2. **Connect sensors** - Implement real sensor readers
-3. **Integrate devices** - Add smart plug/thermostat control
-4. **Tune parameters** - Adjust comfort weights and thermal coefficients
-5. **Analyze results** - Review saved optimization decisions
-
-## Troubleshooting
-
-### ImportError: No module named 'intelliwarm'
-
-```bash
-# Make sure you're in the project root
-cd /path/to/IntelliWarm
-python app.py
-```
-
-### Database errors
-
-```bash
-# Delete old database to reset
-rm intelliwarm.db
-python app.py  # Will create a fresh database
-```
-
-### Missing dependencies
-
-```bash
-pip install -r requirements.txt --upgrade
-```
-
-## More Documentation
-
-- **Full SRS**: See README.md (System Overview section)
-- **API Reference**: See docstrings in Python modules
-- **Examples**: Run `python examples.py`
-- **Tests**: Browse `tests/test_modules.py`
-
----
-
-**Questions?** Open an issue on GitHub or review the code comments.
+Re-run the focused suite above before broader work.

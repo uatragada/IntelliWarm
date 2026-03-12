@@ -1,169 +1,89 @@
 # Contributing to IntelliWarm
 
-We welcome contributions! Here's how to help.
+## Development Principles
 
-## Development Setup
+- keep changes bounded to one subsystem at a time
+- prefer extending the current package layout over broad renames
+- keep route handlers thin and business logic in services or domain modules
+- keep simulation deterministic and offline-safe
+- add or update tests for every behavior change
+- update documentation when workflows, architecture, or priorities change
 
-1. **Fork the repository**
-2. **Create a branch**: `git checkout -b feature/your-feature`
-3. **Install dev dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   pip install pytest pylint black
-   ```
+## Setup
 
-## Code Standards
-
-### Style Guide
-- Use **PEP 8** formatting
-- Run linter: `pylint intelliwarm/`
-- Format code: `black intelliwarm/`
-- Aim for > 80% test coverage
-
-### Docstrings
-Every class and function should have a docstring:
-
-```python
-def compute_optimal_plan(self, room_name: str, current_temp: float) -> Dict:
-    """
-    Compute optimal heating schedule.
-    
-    Args:
-        room_name: Name of the room
-        current_temp: Current temperature in Celsius
-        
-    Returns:
-        Dict with 'optimal_actions' and 'total_cost'
-    """
+```bash
+pip install -r requirements.txt
 ```
 
-### Type Hints
-Use type hints for all function signatures:
+## Required Read Order Before Non-Trivial Changes
 
-```python
-def set_heater(self, room_name: str, power_level: float) -> None:
-    pass
-```
+1. `AGENTS.md`
+2. `.github/copilot-instructions.md`
+3. `docs/roadmap.md`
+4. `docs/architecture.md`
+5. `docs/srs.md`
+
+## Current High-Priority Work
+
+1. Baseline controller with explanations and discrete actions.
+2. Forecast bundle service.
+3. Flask route modularization.
+4. Typed config and validation improvements.
 
 ## Testing
 
-Add tests for new features:
+Run this focused suite when touching runtime, simulation, occupancy, or model code:
 
 ```bash
-# Run all tests
+pytest tests/test_simulation.py tests/test_runtime_service.py tests/test_modules.py
+```
+
+Run the full suite before finishing a broader slice:
+
+```bash
 pytest tests/
-
-# Run specific test
-pytest tests/test_modules.py::TestOptimizer::test_mpc_optimization
-
-# Generate coverage report
-pytest tests/ --cov=intelliwarm
 ```
 
-## Commit Messages
+## Pull Request Expectations
 
-Use clear, descriptive commit messages:
+Each PR should include:
 
-```
-[Feature] Add weather API integration
-[Bugfix] Fix thermal model parameter learning
-[Docs] Update README with new API endpoints
-[Test] Add tests for occupancy predictor
-```
+- purpose
+- modules changed
+- tests added or updated
+- screenshots if the dashboard changed
+- assumptions or follow-up work
 
-## Areas for Contribution
+## Coding Expectations
 
-### High Priority
-1. **Real device integration** → Smart plugs, thermostats
-2. **Weather API** → Live temperature forecasts
-3. **ML occupancy prediction** → Learn from patterns
-4. **Multi-zone optimization** → Shared heating resources
+- use type hints for public APIs
+- keep public class and function docstrings concise
+- do not hardcode room-specific logic in controllers
+- do not call live APIs directly from the optimizer or simulator
+- do not mix UI, storage, and control changes in one PR unless the slice requires it
 
-### Medium Priority
-5. **Dashboard improvements** → Charts, heatmaps
-6. **Database migration** → PostgreSQL support
-7. **Cloud deployment** → Docker, Kubernetes
-8. **Mobile app** → React Native frontend
+## Project Layout
 
-### Nice to Have
-9. Reinforcement learning control
-10. Cost/energy analytics reports
-11. User authentication
-12. Multi-property support
-
-## Submitting a Pull Request
-
-1. **Keep it focused** - One feature per PR
-2. **Write tests** - New code needs tests
-3. **Update docs** - Edit README if changing behavior
-4. **Run tests locally**:
-   ```bash
-   pytest tests/ -v
-   pylint intelliwarm/
-   black intelliwarm/
-   ```
-5. **Push and create PR** - Include description of changes
-
-## Project Structure
-
-```
+```text
 intelliwarm/
-├── core/          # Config & scheduler
-├── sensors/       # Temperature/occupancy
-├── models/        # Thermal model
-├── prediction/    # Occupancy forecasting
-├── pricing/       # Energy prices
-├── optimizer/     # MPC controller
-├── control/       # Device commands
-├── storage/       # Database
-└── learning/      # Model retraining
-
-tests/            # Unit tests
-configs/          # Configuration files
-templates/        # HTML templates
+├── core/
+├── control/
+├── data/
+├── learning/
+├── models/
+├── optimizer/
+├── prediction/
+├── pricing/
+├── sensors/
+├── services/
+└── storage/
 ```
 
-## Development Workflow
+## Documentation To Update When Needed
 
-### Adding a new module:
-
-1. Create directory: `intelliwarm/mymodule/`
-2. Add `__init__.py` with exports
-3. Implement core logic in feature files
-4. Add unit tests in `tests/test_mymodule.py`
-5. Update imports in `intelliwarm/__init__.py`
-6. Document in README.md
-
-### Example: Adding energy rate tariffs
-
-```python
-# intelliwarm/pricing/tariff_model.py
-class TimeOfUseTariff:
-    """Time-of-use electricity pricing"""
-    
-    def get_rate(self, hour: int) -> float:
-        """Get electricity rate for hour of day"""
-        if 6 <= hour < 9 or 17 <= hour < 21:
-            return 0.18  # Peak
-        elif 23 <= hour or hour < 6:
-            return 0.08  # Off-peak
-        else:
-            return 0.12  # Mid-peak
-```
-
-## Questions?
-
-- **Issues**: Open a GitHub issue
-- **Discussions**: Use GitHub discussions
-- **Email**: uday@example.com
-
-## Code of Conduct
-
-- Be respectful and inclusive
-- Assume good intent
-- Help others learn
-- Report issues constructively
-
----
-
-**Thank you for helping make IntelliWarm better!** 🌡️
+- `README.md`
+- `QUICKSTART.md`
+- `docs/architecture.md`
+- `docs/roadmap.md`
+- `docs/srs.md`
+- `docs/copilot-prompts.md`
