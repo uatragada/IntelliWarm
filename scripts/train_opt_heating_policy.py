@@ -490,8 +490,13 @@ def train_opt_policy(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / "opt_policy_ppo"
+    normalize_path = output_dir / "opt_policy_vec_normalize.pkl"
     summary_path = output_dir / "opt_policy_training_summary.json"
     vec_env, vec_env_type = _build_train_vec_env(n_envs, force_dummy_vec_env=force_dummy_vec_env)
+
+    from stable_baselines3.common.vec_env import VecNormalize
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
+
     logger = TrainingLogger(
         n_envs=n_envs,
         total_timesteps=total_timesteps,
@@ -523,6 +528,7 @@ def train_opt_policy(
         if text_progress and not progress_bar and logger.num_timesteps > 0:
             logger._print_progress()
         model.save(str(model_path))
+        vec_env.save(str(normalize_path))
         summary = {
             "total_timesteps": int(total_timesteps),
             "n_envs": int(n_envs),
@@ -534,6 +540,7 @@ def train_opt_policy(
             "episode_costs": [float(value) for value in logger.ep_costs],
             "episode_violations": [float(value) for value in logger.ep_violations],
             "model_path": str(model_path.with_suffix(".zip")),
+            "normalize_path": str(normalize_path),
             "summary_path": str(summary_path),
         }
         with summary_path.open("w", encoding="utf-8") as handle:
