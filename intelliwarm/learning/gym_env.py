@@ -291,6 +291,8 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         energy_weight: float = 1.0,
         switching_weight: float = 0.25,
         invalid_source_penalty: float = 1.0,
+        max_forecast_steps: Optional[int] = None,
+        comfort_warmup_steps: int = 0,
     ):
         if not scenarios:
             raise ValueError("At least one training scenario is required")
@@ -300,12 +302,17 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         self.energy_weight = float(energy_weight)
         self.switching_weight = float(switching_weight)
         self.invalid_source_penalty = float(invalid_source_penalty)
+        self.comfort_warmup_steps = max(0, int(comfort_warmup_steps))
 
         self.max_rooms = max(len(scenario.room_configs) for scenario in self.scenarios)
         self.max_zones = max(len(scenario.zone_configs) for scenario in self.scenarios)
         self.occupancy_forecast_horizon_steps = max(
             scenario.horizon_steps for scenario in self.scenarios
         )
+        if max_forecast_steps is not None:
+            self.occupancy_forecast_horizon_steps = min(
+                self.occupancy_forecast_horizon_steps, int(max_forecast_steps)
+            )
         # Global features: T_out, elec_price, gas_price, hour_sin, hour_cos,
         #                   next_1h_occ_max, next_2h_occ_max  (7 total)
         self._n_global_features = 7
@@ -652,9 +659,12 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             switching_penalty += abs(room_action - self._last_effective_actions[room_name])
 
         total_cost = electric_cost + gas_cost
+        warmup_scale = 1.0
+        if self.comfort_warmup_steps > 0 and self._step_index < self.comfort_warmup_steps:
+            warmup_scale = self._step_index / self.comfort_warmup_steps
         reward = -(
             (self.energy_weight * total_cost)
-            + (self.comfort_penalty_weight * comfort_violation)
+            + (warmup_scale * self.comfort_penalty_weight * comfort_violation)
             + (self.switching_weight * switching_penalty)
             + invalid_source_penalty
         )

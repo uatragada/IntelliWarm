@@ -26,6 +26,7 @@ from intelliwarm.learning.gym_env import ScenarioBoundPriceService
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.pricing import EnergyPriceService, StaticPriceProvider
 from scripts.evaluate_policies import main as evaluate_policies_main
+import scripts.train_opt_heating_policy as train_opt_heating_policy_script
 
 
 def _build_env():
@@ -322,6 +323,69 @@ def test_evaluate_policies_script_emits_json_summary(capsys):
     assert '"winter-workday"' in captured.out
 
 
+def test_train_opt_heating_policy_script_emits_json_summary(tmp_path, monkeypatch, capsys):
+    def _fake_train_opt_policy(**kwargs):
+        assert kwargs["progress_interval"] == 5000
+        return {
+            "total_timesteps": kwargs["total_timesteps"],
+            "n_envs": kwargs["n_envs"],
+            "vec_env_type": "SubprocVecEnv",
+            "device": "cpu",
+            "parameter_count": 414000,
+            "elapsed_seconds": 12.5,
+            "episode_rewards": [1.0, 2.0],
+            "episode_costs": [0.1, 0.2],
+            "episode_violations": [0.3, 0.4],
+            "model_path": str(tmp_path / "opt_policy_ppo.zip"),
+            "summary_path": str(tmp_path / "opt_policy_training_summary.json"),
+        }
+
+    monkeypatch.setattr(train_opt_heating_policy_script, "train_opt_policy", _fake_train_opt_policy)
+
+    exit_code = train_opt_heating_policy_script.main(
+        ["--timesteps", "123", "--n-envs", "2", "--output-dir", str(tmp_path), "--json"]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"total_timesteps": 123' in captured.out
+    assert '"n_envs": 2' in captured.out
+    assert '"parameter_count": 414000' in captured.out
+
+
+def test_train_opt_heating_policy_script_prints_text_summary(tmp_path, monkeypatch, capsys):
+    def _fake_train_opt_policy(**kwargs):
+        assert kwargs["text_progress"] is True
+        assert kwargs["progress_bar"] is False
+        assert kwargs["progress_interval"] == 250
+        return {
+            "total_timesteps": kwargs["total_timesteps"],
+            "n_envs": kwargs["n_envs"],
+            "vec_env_type": "DummyVecEnv",
+            "device": "cpu",
+            "parameter_count": 414000,
+            "elapsed_seconds": 9.5,
+            "episode_rewards": [1.0],
+            "episode_costs": [0.1],
+            "episode_violations": [0.3],
+            "model_path": str(tmp_path / "opt_policy_ppo.zip"),
+            "summary_path": str(tmp_path / "opt_policy_training_summary.json"),
+        }
+
+    monkeypatch.setattr(train_opt_heating_policy_script, "train_opt_policy", _fake_train_opt_policy)
+
+    exit_code = train_opt_heating_policy_script.main(
+        ["--timesteps", "500", "--n-envs", "1", "--output-dir", str(tmp_path), "--no-progress-bar", "--progress-interval", "250"]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Training complete in 9.5s using DummyVecEnv on cpu" in captured.out
+    assert "Recorded 1 completed episodes" in captured.out
+
+
 def test_multi_room_env_penalizes_invalid_furnace_request():
     env = IntelliWarmMultiRoomEnv(SyntheticScenarioGenerator().default_scenarios(), invalid_source_penalty=3.5)
     env.reset(options={"scenario_name": "winter-workday"})
@@ -377,3 +441,44 @@ def test_scenario_bound_price_service_uses_subhour_step_offsets():
     assert first["electricity"] == pytest.approx(0.10)
     assert second["electricity"] == pytest.approx(0.11)
     assert third["electricity"] == pytest.approx(0.12)
+
+
+def test_max_forecast_steps_caps_observation_dimension():
+    scenarios = SyntheticScenarioGenerator().default_scenarios()
+    env_full = IntelliWarmMultiRoomEnv(scenarios)
+    env_capped = IntelliWarmMultiRoomEnv(scenarios, max_forecast_steps=2)
+
+    obs_full, info_full = env_full.reset(options={"scenario_name": "winter-workday"})
+    obs_capped, info_capped = env_capped.reset(options={"scenario_name": "winter-workday"})
+
+    assert info_full["occupancy_forecast_horizon_steps"] == 6
+    assert info_capped["occupancy_forecast_horizon_steps"] == 2
+    expected_diff = info_full["max_rooms"] * (6 - 2)
+    assert obs_full.shape[0] - obs_capped.shape[0] == expected_diff
+
+
+def test_max_forecast_steps_none_preserves_default_behavior():
+    scenarios = SyntheticScenarioGenerator().default_scenarios()
+    env_default = IntelliWarmMultiRoomEnv(scenarios)
+    env_none = IntelliWarmMultiRoomEnv(scenarios, max_forecast_steps=None)
+
+    obs_default, _ = env_default.reset(options={"scenario_name": "winter-workday"})
+    obs_none, _ = env_none.reset(options={"scenario_name": "winter-workday"})
+
+    assert obs_default.shape == obs_none.shape
+
+
+def test_comfort_warmup_scales_penalty_during_early_steps():
+    scenarios = SyntheticScenarioGenerator().default_scenarios()
+    env_no_warmup = IntelliWarmMultiRoomEnv(scenarios, comfort_penalty_weight=10.0, comfort_warmup_steps=0)
+    env_warmup = IntelliWarmMultiRoomEnv(scenarios, comfort_penalty_weight=10.0, comfort_warmup_steps=4)
+
+    env_no_warmup.reset(options={"scenario_name": "winter-workday"})
+    env_warmup.reset(options={"scenario_name": "winter-workday"})
+
+    action = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    _, reward_no_warmup, _, _, info_no = env_no_warmup.step(action)
+    _, reward_warmup, _, _, info_wu = env_warmup.step(action)
+
+    if info_no["comfort_violation"] > 0:
+        assert reward_warmup > reward_no_warmup
