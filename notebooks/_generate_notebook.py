@@ -95,7 +95,9 @@ print("\\n🎉 Dependencies ready!")
 """)
 
 code("""\
+import json
 import os, sys, warnings
+from pathlib import Path
 sys.path.insert(0, os.path.abspath(".."))
 warnings.filterwarnings("ignore")
 
@@ -121,8 +123,6 @@ from intelliwarm.learning.gym_env import IntelliWarmMultiRoomEnv
 # ── Gymnasium + SB3 ───────────────────────────────────────────────────────────
 import gymnasium as gym
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import BaseCallback
 
 print("✅ All imports OK")
 print(f"   gymnasium {gym.__version__}")
@@ -411,23 +411,22 @@ Subclass of `IntelliWarmMultiRoomEnv` that overrides `_build_simulator()` to use
 `PhysicsRoomThermalModel` instead of the legacy first-order model.  The shared
 multi-room observation includes each room's **full 24-hour future occupancy
 forecast** (288 five-minute steps) in addition to current state, so PPO sees
-the same schedule-style signal that the rule-based controllers use. This gives each room:
+the same schedule-style signal that the rule-based controllers use. During PPO
+training/evaluation we also append `smart_tou`'s recommended zone-source and
+room-demand signals as teacher features. This gives each room:
 - Lumped thermal capacitance **C** [kJ/K] derived from heater design load.
 - Envelope + **infiltration** conductance **UA** [W/K] (ASHRAE 62.2, 0.5 ACH default).
 - Per-room **furnace power share** from `ZoneConfig` (BTU/hr × AFUE ÷ rooms).
 - **Solar gain** on a south-facing vertical window (dm4bem incidence angle model).
 
-### PreheatRewardWrapper
-Adds an extra penalty on top of the base reward when a room is **approaching or in
-an occupied period but is below the target minimum temperature**.
+### Comfort warmup ramp
+During the first `comfort_warmup_steps` steps (default 24 = 2 hours), the comfort
+penalty is linearly scaled from 0 to full strength. This avoids penalizing the
+policy for unavoidable temperature deficits when rooms start cold.
 
-```
-extra_penalty = preheat_boost × occupancy_prob × max(target_min − T_room, 0)
-```
-applied whenever `occupancy_prob > preheat_threshold` (default 0.35).
-
-The wrapper also reports the added penalty back through `info`, so notebook
-reward, comfort-violation, and cost diagnostics stay aligned.
+### Observation compression
+`max_forecast_steps=24` caps the occupancy forecast to a 2-hour lookahead at
+5-minute resolution, reducing the observation from ~1500 dims to ~174 dims.
 """)
 
 code("""\
@@ -441,6 +440,8 @@ class PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
         cloud_cover: float = 0.30,
         infiltration_ach: float = 0.50,  # ASHRAE 62.2 residential default
         albedo: float = 0.20,            # grass/asphalt ground
+        include_smart_tou_features: bool = False,
+        smart_tou_feature_fn=None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -448,6 +449,17 @@ class PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
         self._cloud_cover = cloud_cover
         self._infiltration_ach = infiltration_ach
         self._albedo = albedo
+        self._include_smart_tou_features = include_smart_tou_features
+        self._smart_tou_feature_fn = smart_tou_feature_fn
+        self._smart_tou_feature_dim = self.max_zones + self.max_rooms
+        if self._include_smart_tou_features:
+            base_dim = self.observation_space.shape[0]
+            self.observation_space = gym.spaces.Box(
+                low=-1000.0,
+                high=1000.0,
+                shape=(base_dim + self._smart_tou_feature_dim,),
+                dtype=np.float32,
+            )
 
     def _build_simulator(self, scenario: TrainingScenario) -> HouseSimulator:
         thermal_models = {}
@@ -478,85 +490,59 @@ class PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
             albedo=self._albedo,
         )
 
-print("✅ PhysicsMultiRoomEnv defined")
-""")
+    def _augment_observation(self, obs: np.ndarray, info: dict):
+        info = dict(info)
+        info["base_observation_dim"] = int(obs.shape[0])
+        info["smart_tou_feature_dim"] = self._smart_tou_feature_dim if self._include_smart_tou_features else 0
+        if not self._include_smart_tou_features:
+            return obs, info
 
-code("""\
-class PreheatRewardWrapper(gym.Wrapper):
-    \"\"\"
-    Amplifies comfort penalties during pre-occupancy and occupied periods to
-    give the policy a stronger gradient for learning to preheat ahead of arrival.
+        if self._smart_tou_feature_fn is None:
+            raise RuntimeError("smart_tou teacher features requested without a feature function.")
 
-    At each step for every active room:
-        extra_penalty += preheat_boost * effective_occ * max(target_min - T, 0)
-    applied whenever occupancy_prob > preheat_threshold (default 0.35).
+        smart_tou_features = np.asarray(self._smart_tou_feature_fn(obs, info), dtype=np.float32)
+        info["smart_tou_zone_signal_offset"] = int(obs.shape[0])
+        info["smart_tou_room_demand_offset"] = int(obs.shape[0] + self.max_zones)
+        return np.concatenate([obs.astype(np.float32), smart_tou_features]), info
 
-    The base energy and switching costs from IntelliWarmMultiRoomEnv are unchanged.
-    \"\"\"
-
-    def __init__(self, env: gym.Env, preheat_boost: float = 30.0,
-                 preheat_threshold: float = 0.05):
-        super().__init__(env)
-        self.preheat_boost = preheat_boost
-        self.preheat_threshold = preheat_threshold
+    def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
+        obs, info = super().reset(seed=seed, options=options)
+        return self._augment_observation(obs, info)
 
     def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = super().step(action)
+        obs, info = self._augment_observation(obs, info)
+        return obs, reward, terminated, truncated, info
 
-        max_rooms = self.env.max_rooms
-        forecast_horizon = self.env.occupancy_forecast_horizon_steps
-        room_feature_block = max_rooms * 6
-        extra = 0.0
-        for i in range(max_rooms):
-            base = i * 6
-            if float(obs[base + 5]) < 0.5:   # validity flag
-                continue
-            temp       = float(obs[base + 0])
-            target_min = float(obs[base + 1])
-            occ_now    = float(obs[base + 3])
-            forecast_base = room_feature_block + (i * forecast_horizon)
-            next_1h_occ = float(obs[forecast_base + 0]) if forecast_horizon >= 1 else 0.0
-            next_2h_occ = float(obs[forecast_base + 1]) if forecast_horizon >= 2 else 0.0
-            effective_occ = max(occ_now, next_1h_occ, next_2h_occ)
-            if effective_occ > self.preheat_threshold and temp < target_min:
-                extra += self.preheat_boost * effective_occ * (target_min - temp)
-
-        info = dict(info)
-        info["preheat_penalty"] = extra
-        base_violation = float(info.get("comfort_violation", 0.0))
-        comfort_weight = max(float(getattr(self.env, "comfort_penalty_weight", 1.0)), 1e-6)
-        info["reported_comfort_violation"] = base_violation + (extra / comfort_weight)
-        info["wrapped_reward"] = reward - extra
-
-        return obs, reward - extra, terminated, truncated, info
-
-print("✅ PreheatRewardWrapper defined")
+print("✅ PhysicsMultiRoomEnv defined")
 """)
 
 code("""\
 # ── Create environment and explore spaces ─────────────────────────────────────
 _ENV_KWARGS = dict(
-    comfort_penalty_weight=25.0,   # strong comfort incentive
+    comfort_penalty_weight=5.0,
     energy_weight=1.0,
-    switching_weight=0.10,         # light switching penalty
-    invalid_source_penalty=2.0,    # penalise requesting furnace on electric zone
+    switching_weight=0.05,
+    invalid_source_penalty=2.0,
+    max_forecast_steps=24,
+    comfort_warmup_steps=24,
 )
 
 _probe = PhysicsMultiRoomEnv(scenarios=SCENARIOS, **_ENV_KWARGS)
-_probe = PreheatRewardWrapper(_probe)
 obs0, info0 = _probe.reset(seed=0)
 
 print("═" * 60)
 print("Environment spaces")
 print("═" * 60)
 print(f"  Observation: Box{_probe.observation_space.shape} float32")
-print(f"    = {_probe.env.max_rooms} rooms × 6 state features")
-print(f"    + {_probe.env.max_rooms} rooms × {_probe.env.occupancy_forecast_horizon_steps} occupancy-forecast features")
-print(f"    + {_probe.env.max_zones} zones × 3 features")
+print(f"    = {_probe.max_rooms} rooms × 6 state features")
+print(f"    + {_probe.max_rooms} rooms × {_probe.occupancy_forecast_horizon_steps} occupancy-forecast features")
+print(f"    + {_probe.max_zones} zones × 3 features")
 print(f"    + 7 global features  (T_out, elec, gas, hour_sin, hour_cos, next_1h_occ, next_2h_occ)")
+print(f"    + PPO-only teacher features: {_probe.max_zones} smart_tou zone hints + {_probe.max_rooms} smart_tou room-demand hints")
 print(f"  Action:      Box{_probe.action_space.shape} float32")
-print(f"    = {_probe.env.max_zones} zone source signals  [0..1, >=0.5 ⇒ furnace]")
-print(f"    + {_probe.env.max_rooms} room heat demands     [0..1 continuous]")
+print(f"    = {_probe.max_zones} zone source signals  [0..1, >=0.5 ⇒ furnace]")
+print(f"    + {_probe.max_rooms} room heat demands     [0..1 continuous]")
 print()
 print(f"Initial observation (first episode, winter_workday):")
 print(f"  Scenario  : {info0['scenario_name']}")
@@ -586,10 +572,14 @@ comfort-violation reference points.
 """)
 
 code("""\
-def _make_eval_env(scenario: TrainingScenario):
+def _make_eval_env(scenario: TrainingScenario, include_smart_tou_features: bool = False):
     \"\"\"Create a fresh wrapped env for a single scenario.\"\"\"
-    env = PhysicsMultiRoomEnv(scenarios=[scenario], **_ENV_KWARGS)
-    env = PreheatRewardWrapper(env)
+    env = PhysicsMultiRoomEnv(
+        scenarios=[scenario],
+        include_smart_tou_features=include_smart_tou_features,
+        smart_tou_feature_fn=_smart_tou_feature_vector if include_smart_tou_features else None,
+        **_ENV_KWARGS,
+    )
     return env
 
 
@@ -604,13 +594,12 @@ def rollout(policy_fn, env, seed: int = 42):
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward    += reward
         total_cost      += info.get("total_cost", 0.0)
-        total_violation += info.get("reported_comfort_violation", info.get("comfort_violation", 0.0))
+        total_violation += info.get("comfort_violation", 0.0)
         log.append({
             "step": step_idx,
             "reward": reward,
             "total_cost": info.get("total_cost", 0.0),
-            "comfort_violation": info.get("reported_comfort_violation", info.get("comfort_violation", 0.0)),
-            "preheat_penalty": info.get("preheat_penalty", 0.0),
+            "comfort_violation": info.get("comfort_violation", 0.0),
             "electric_cost": info.get("electric_cost", 0.0),
             "gas_cost": info.get("gas_cost", 0.0),
             "zone_heat_sources": dict(info.get("zone_heat_sources", {})),
@@ -621,11 +610,11 @@ def rollout(policy_fn, env, seed: int = 42):
     return total_reward, total_cost, total_violation, log
 
 
-def eval_policy_all_scenarios(name: str, policy_fn):
+def eval_policy_all_scenarios(name: str, policy_fn, include_smart_tou_features: bool = False):
     \"\"\"Evaluate policy once on each fixed scenario.\"\"\"
     results = {"name": name}
     for scenario in SCENARIOS:
-        env = _make_eval_env(scenario)
+        env = _make_eval_env(scenario, include_smart_tou_features=include_smart_tou_features)
         r, c, v, _ = rollout(policy_fn, env, seed=42)
         env.close()
         results[scenario.name] = {
@@ -682,6 +671,7 @@ def _zone_vector(zone_signals: Dict[str, float], info: dict):
     return values
 
 def _obs_context(obs, info):
+    base_obs = obs[: info.get("base_observation_dim", len(obs))]
     max_rooms = info["max_rooms"]
     horizon = info["occupancy_forecast_horizon_steps"]
     room_feature_block = max_rooms * 6
@@ -689,21 +679,21 @@ def _obs_context(obs, info):
     for idx, room_name in enumerate(info.get("room_names", [])):
         base = idx * 6
         forecast_base = room_feature_block + (idx * horizon)
-        occ_now = float(obs[base + 3])
-        future_occ = [float(obs[forecast_base + j]) for j in range(horizon)]
+        occ_now = float(base_obs[base + 3])
+        future_occ = [float(base_obs[forecast_base + j]) for j in range(horizon)]
         room_context[room_name] = {
-            "temp": float(obs[base + 0]),
-            "target_min": float(obs[base + 1]),
-            "target_max": float(obs[base + 2]),
+            "temp": float(base_obs[base + 0]),
+            "target_min": float(base_obs[base + 1]),
+            "target_max": float(base_obs[base + 2]),
             "forecast": [occ_now] + future_occ,
             "current_occ": occ_now,
-            "last_action": float(obs[base + 4]),
-            "target": 0.5 * (float(obs[base + 1]) + float(obs[base + 2])),
+            "last_action": float(base_obs[base + 4]),
+            "target": 0.5 * (float(base_obs[base + 1]) + float(base_obs[base + 2])),
         }
 
-    outside_temp = float(obs[-7])
-    electricity_price = float(obs[-6])
-    gas_price = float(obs[-5])
+    outside_temp = float(base_obs[-7])
+    electricity_price = float(base_obs[-6])
+    gas_price = float(base_obs[-5])
     return room_context, outside_temp, electricity_price, gas_price
 
 def _baseline_room_demands(obs, info):
@@ -740,7 +730,7 @@ def policy_furnace_comfort(obs, info):
     }
     return _zone_vector(zone_src, info) + _room_vector(room_demands, info)
 
-def policy_smart_tou(obs, info):
+def _smart_tou_decision(obs, info):
     \"\"\"Continuous heuristic hybrid controller using the shared zone cost logic.\"\"\"
     room_context, outside_temp, electricity_price, gas_price = _obs_context(obs, info)
     zone_signals = {}
@@ -763,6 +753,14 @@ def policy_smart_tou(obs, info):
         zone_signals[zone_name] = 1.0 if decision.heat_source == HeatSourceType.GAS_FURNACE else 0.0
         room_demands.update(decision.per_room_actions)
 
+    return zone_signals, room_demands
+
+def _smart_tou_feature_vector(obs, info):
+    zone_signals, room_demands = _smart_tou_decision(obs, info)
+    return _zone_vector(zone_signals, info) + _room_vector(room_demands, info)
+
+def policy_smart_tou(obs, info):
+    zone_signals, room_demands = _smart_tou_decision(obs, info)
     return _zone_vector(zone_signals, info) + _room_vector(room_demands, info)
 
 BASELINE_POLICIES = {
@@ -835,7 +833,10 @@ md("""\
 ## 🧠 6. Training the OPT Policy with PPO
 
 We use **Proximal Policy Optimisation** (Schulman et al., 2017) from
-Stable-Baselines3 with 4 parallel environment workers.
+Stable-Baselines3, but run training through `scripts/train_opt_heating_policy.py`
+instead of directly inside Jupyter. This avoids the Windows notebook
+`SubprocVecEnv` worker crashes while still saving the trained model and
+per-episode metrics back into `output/` for the rest of this notebook.
 
 ### Key PPO hyperparameters
 
@@ -849,9 +850,10 @@ Stable-Baselines3 with 4 parallel environment workers.
 | `learning_rate` | 3e-4 | Standard Adam LR for PPO |
 
 ### Training environment
-- `PhysicsMultiRoomEnv` with `PreheatRewardWrapper(preheat_boost=30, preheat_threshold=0.05)`.
+- `PhysicsMultiRoomEnv` with `max_forecast_steps=24` (2h occupancy lookahead) and `comfort_warmup_steps=24`.
 - Scenarios cycle round-robin across the 4 parallel workers.
 - Each episode lasts exactly **288 steps** (one simulated day at 5-minute resolution).
+- PPO observations append `smart_tou`'s recommended zone source and room demand as teacher features.
 - PPO outputs **continuous** room heat demands in `[0, 1]` plus continuous zone-source
   signals where `>= 0.5` requests the furnace.
 
@@ -865,101 +867,79 @@ Stable-Baselines3 with 4 parallel environment workers.
 code("""\
 N_ENVS = 4
 TOTAL_TIMESTEPS = 100_000
+REPO_ROOT = Path(os.path.abspath(".."))
+OUTPUT_DIR = REPO_ROOT / "output"
+TRAINING_SCRIPT = REPO_ROOT / "scripts" / "train_opt_heating_policy.py"
+MODEL_PATH = OUTPUT_DIR / "opt_policy_ppo"
+MODEL_ZIP_PATH = MODEL_PATH.with_suffix(".zip")
+TRAINING_SUMMARY_PATH = OUTPUT_DIR / "opt_policy_training_summary.json"
 
-def _make_train_env(seed: int = 0):
-    \"\"\"Factory for one training environment instance (cycles all scenarios).\"\"\"
-    def _init():
-        env = PhysicsMultiRoomEnv(scenarios=SCENARIOS, **_ENV_KWARGS)
-        env = PreheatRewardWrapper(env, preheat_boost=30.0, preheat_threshold=0.05)
-        env.reset(seed=seed)
-        return env
-    return _init
-
-vec_env = DummyVecEnv([_make_train_env(seed=i) for i in range(N_ENVS)])
-
-print(f"VecEnv: {N_ENVS} parallel environments")
-print(f"  obs_space : {vec_env.observation_space.shape}")
-print(f"  act_space : Box{vec_env.action_space.shape}")
+print(f"Training script : {TRAINING_SCRIPT}")
+print(f"Model artifact  : {MODEL_ZIP_PATH}")
+print(f"Metrics artifact: {TRAINING_SUMMARY_PATH}")
 """)
 
 code("""\
-# ── Logging callback ─────────────────────────────────────────────────────────
-class TrainingLogger(BaseCallback):
-    \"\"\"Records per-episode reward, cost, and comfort violation during training.\"\"\"
+def load_training_artifacts():
+    if not MODEL_ZIP_PATH.exists():
+        raise FileNotFoundError(f"Missing trained model: {MODEL_ZIP_PATH}")
+    if not TRAINING_SUMMARY_PATH.exists():
+        raise FileNotFoundError(f"Missing training summary: {TRAINING_SUMMARY_PATH}")
 
-    def __init__(self):
-        super().__init__(verbose=0)
-        self.ep_rewards: List[float] = []
-        self.ep_costs:   List[float] = []
-        self.ep_violations: List[float] = []
-        self._ep_reward   = [0.0] * N_ENVS
-        self._ep_cost     = [0.0] * N_ENVS
-        self._ep_violation = [0.0] * N_ENVS
+    with TRAINING_SUMMARY_PATH.open("r", encoding="utf-8") as fh:
+        training_summary = json.load(fh)
 
-    def _on_step(self) -> bool:
-        rewards = self.locals.get("rewards", [0.0] * N_ENVS)
-        dones   = self.locals.get("dones", [False]   * N_ENVS)
-        infos   = self.locals.get("infos", [{}]       * N_ENVS)
+    model = PPO.load(str(MODEL_PATH))
+    return training_summary, model
 
-        for i in range(N_ENVS):
-            self._ep_reward[i]    += float(rewards[i])
-            self._ep_cost[i]      += float(infos[i].get("total_cost", 0.0))
-            self._ep_violation[i] += float(infos[i].get("reported_comfort_violation", infos[i].get("comfort_violation", 0.0)))
-            if dones[i]:
-                self.ep_rewards.append(self._ep_reward[i])
-                self.ep_costs.append(self._ep_cost[i])
-                self.ep_violations.append(self._ep_violation[i])
-                self._ep_reward[i] = self._ep_cost[i] = self._ep_violation[i] = 0.0
-        return True
+print("Ready to launch external PPO training and load saved artifacts.")
+""")
 
-logger = TrainingLogger()
+code("""\
+# ── Train externally, then load artifacts back into the notebook ─────────────
+FORCE_RETRAIN = False
 
-# ── PPO model ────────────────────────────────────────────────────────────────
-import torch
-
-if torch.cuda.is_available():
-    device = "cuda"
-    device_label = f"cuda ({torch.cuda.get_device_name(0)})"
+if FORCE_RETRAIN or not MODEL_ZIP_PATH.exists() or not TRAINING_SUMMARY_PATH.exists():
+    cmd = [
+        sys.executable,
+        str(TRAINING_SCRIPT),
+        "--timesteps", str(TOTAL_TIMESTEPS),
+        "--n-envs", str(N_ENVS),
+        "--output-dir", str(OUTPUT_DIR),
+        "--no-progress-bar",
+        "--progress-interval", "5000",
+    ]
+    print("Launching external trainer:")
+    print("  " + " ".join(cmd))
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="")
+    return_code = process.wait()
+    if return_code != 0:
+        raise RuntimeError(f"External trainer failed with exit code {return_code}")
 else:
-    device = "cpu"
-    device_label = "cpu"
-    print("Warning: CUDA not available, falling back to CPU training.")
+    print("Using existing training artifacts. Set FORCE_RETRAIN = True to rerun PPO.")
 
-model = PPO(
-    "MlpPolicy",
-    vec_env,
-    verbose=0,
-    n_steps=1152,
-    batch_size=256,
-    n_epochs=10,
-    learning_rate=3e-4,
-    gamma=0.999,
-    gae_lambda=0.95,
-    ent_coef=0.02,
-    clip_range=0.20,
-    policy_kwargs=dict(net_arch=[128, 128]),   # two hidden layers
-    seed=42,
-    device=device,
-)
-
-print(f"Using PPO device: {device_label}")
-print(f"PPO model ready — {sum(p.numel() for p in model.policy.parameters()):,} parameters")
-print(f"Training for {TOTAL_TIMESTEPS:,} timesteps across {N_ENVS} envs …")
-""")
-
-code("""\
-# ── Train! ────────────────────────────────────────────────────────────────────
-import time
-t0 = time.time()
-model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=logger, progress_bar=True)
-elapsed = time.time() - t0
-print(f"\\n✅ Training complete in {elapsed:.1f}s")
-print(f"   Episodes logged: {len(logger.ep_rewards)}")
-if logger.ep_rewards:
+training_summary, model = load_training_artifacts()
+print(f"\\n✅ Training artifacts loaded")
+print(f"   VecEnv: {training_summary['vec_env_type']}")
+print(f"   Device: {training_summary['device']}")
+print(f"   Parameters: {training_summary['parameter_count']:,}")
+print(f"   Elapsed: {training_summary['elapsed_seconds']:.1f}s")
+print(f"   Episodes logged: {len(training_summary['episode_rewards'])}")
+if training_summary["episode_rewards"]:
     last_k = 200
-    r_last = np.mean(logger.ep_rewards[-last_k:])
-    c_last = np.mean(logger.ep_costs[-last_k:])
-    v_last = np.mean(logger.ep_violations[-last_k:])
+    r_last = np.mean(training_summary["episode_rewards"][-last_k:])
+    c_last = np.mean(training_summary["episode_costs"][-last_k:])
+    v_last = np.mean(training_summary["episode_violations"][-last_k:])
     print(f"   Last {last_k} episodes — reward={r_last:.2f}  cost=${c_last:.4f}  violation={v_last:.3f}")
 """)
 
@@ -976,12 +956,15 @@ def _smooth(data, window: int = 50):
     return np.convolve(data, np.ones(window) / window, mode="same")
 
 fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-ep_idx = np.arange(len(logger.ep_rewards))
+ep_rewards = training_summary["episode_rewards"]
+ep_costs = training_summary["episode_costs"]
+ep_violations = training_summary["episode_violations"]
+ep_idx = np.arange(len(ep_rewards))
 
 METRICS = [
-    (logger.ep_rewards,    "Episode Reward (↑ better)",          "#1565C0"),
-    (logger.ep_costs,      "Episode Energy Cost $ (↓ better)",   "#AD1457"),
-    (logger.ep_violations, "Reported Comfort Violation (↓ better)", "#2E7D32"),
+    (ep_rewards,    "Episode Reward (↑ better)",          "#1565C0"),
+    (ep_costs,      "Episode Energy Cost $ (↓ better)",   "#AD1457"),
+    (ep_violations, "Reported Comfort Violation (↓ better)", "#2E7D32"),
 ]
 
 for ax, (data, title, color) in zip(axes, METRICS):
@@ -1020,7 +1003,11 @@ def policy_trained_opt(obs: np.ndarray, info: dict) -> list:
 
 # ── Evaluate ──────────────────────────────────────────────────────────────────
 print("Evaluating trained OPT policy …")
-trained_results = eval_policy_all_scenarios("trained_opt", policy_trained_opt)
+trained_results = eval_policy_all_scenarios(
+    "trained_opt",
+    policy_trained_opt,
+    include_smart_tou_features=True,
+)
 
 all_results = dict(baseline_results)
 all_results["trained_opt"] = trained_results
@@ -1088,11 +1075,15 @@ code("""\
 # ── Single-episode rollout for analysis ───────────────────────────────────────
 ROOM_ORDER = sorted(ROOMS.keys())   # alphabetical for consistent plots
 
-def full_rollout(policy_fn, scenario_name: str, seed: int = 0):
+def full_rollout(policy_fn, scenario_name: str, seed: int = 0, include_smart_tou_features: bool = False):
     \"\"\"Run one deterministic episode; return per-step records.\"\"\"
     target = next(s for s in SCENARIOS if s.name == scenario_name)
-    env = PhysicsMultiRoomEnv(scenarios=[target], **_ENV_KWARGS)
-    env = PreheatRewardWrapper(env)
+    env = PhysicsMultiRoomEnv(
+        scenarios=[target],
+        include_smart_tou_features=include_smart_tou_features,
+        smart_tou_feature_fn=_smart_tou_feature_vector if include_smart_tou_features else None,
+        **_ENV_KWARGS,
+    )
 
     obs, info = env.reset(seed=seed, options={"scenario_name": scenario_name})
     room_names_sorted = sorted(info["room_names"])
@@ -1122,7 +1113,7 @@ def full_rollout(policy_fn, scenario_name: str, seed: int = 0):
 
         step_costs_elec.append(info.get("electric_cost", 0.0))
         step_costs_gas.append(info.get("gas_cost", 0.0))
-        step_violations.append(info.get("reported_comfort_violation", info.get("comfort_violation", 0.0)))
+        step_violations.append(info.get("comfort_violation", 0.0))
 
         if terminated or truncated:
             break
@@ -1140,7 +1131,7 @@ def full_rollout(policy_fn, scenario_name: str, seed: int = 0):
         "violations": step_violations,
     }
 
-rollout_opt  = full_rollout(policy_trained_opt,  "winter_workday")
+rollout_opt  = full_rollout(policy_trained_opt,  "winter_workday", include_smart_tou_features=True)
 rollout_base = full_rollout(policy_comfort_electric, "winter_workday")
 print("✅ Rollouts complete")
 """)
@@ -1293,15 +1284,9 @@ print(f"└───────────────────────
 md("## 💾 10. Save & Reload Model")
 
 code("""\
-import os
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(".")), "output", "opt_policy_ppo")
-os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-model.save(MODEL_PATH)
-print(f"✅ Model saved to {MODEL_PATH}.zip")
-
-# Reload and verify
-loaded_model = PPO.load(MODEL_PATH)
-obs_test, info_test = _make_train_env(seed=99)().reset()
+print(f"Model artifact already saved by the training script: {MODEL_ZIP_PATH}")
+loaded_model = PPO.load(str(MODEL_PATH))
+obs_test, info_test = _make_eval_env(winter_workday, include_smart_tou_features=True).reset(seed=99)
 a, _ = loaded_model.predict(obs_test, deterministic=True)
 print(f"✅ Reload OK — sample action: {a.tolist()}")
 """)
