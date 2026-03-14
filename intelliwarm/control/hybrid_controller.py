@@ -7,15 +7,19 @@ electric space heaters (per room) based on projected hourly cost.
 Decision logic
 --------------
 For each zone at each timestep:
-  1. Use the BaselineController to get a per-room heating-demand recommendation.
+  1. Use the BaselineController to resolve a per-room heating demand from either
+     inferred room state or explicit learned room intents.
   2. Identify which rooms actually need heat (demand > 0).
   3. Compute:
        electric_cost  = sum of (heater_capacity_kw * room_demand
                                 * electricity_price) for each room needing heat
        furnace_cost   = zone_demand
-                        * (furnace_btu_per_hour / 100_000)
-                        / furnace_efficiency * gas_price_per_therm
-  4. If the zone has a furnace and furnace_cost < electric_cost:
+                        * (furnace_btu_per_hour / 100_000) * gas_price_per_therm
+  4. Apply the requested zone source mode:
+       - AUTO: choose the cheaper source
+       - ELECTRIC: keep per-room electric heat
+       - GAS_FURNACE: use the furnace when available and heat is required
+  5. If the furnace is selected:
        activate the furnace for the whole zone; all rooms share the highest
        demanded normalized output among the rooms that need heat.
      Else:
@@ -41,6 +45,7 @@ from intelliwarm.data.models import (
     ZoneConfig,
 )
 from intelliwarm.control.baseline_controller import BaselineController
+from intelliwarm.control.intent_resolver import ZoneSourceMode, normalize_zone_source_mode
 
 
 logger = logging.getLogger("IntelliWarm.HybridController")
@@ -123,6 +128,8 @@ class HybridController:
         outside_temp: float = 5.0,
         current_actions: Optional[Dict[str, float]] = None,
         target_temps: Optional[Dict[str, float]] = None,
+        room_intents: Optional[Dict[str, object]] = None,
+        zone_source_preference: Optional[object] = None,
     ) -> HybridHeatingDecision:
         """
         Return a zone-level heating decision for this timestep.
@@ -143,9 +150,21 @@ class HybridController:
             Current power level (0–1) per room for hysteresis.
         target_temps:
             Optional per-room target temperature override.
+        room_intents:
+            Optional explicit room intent per room. If omitted, intents are
+            inferred from room state and occupancy forecast.
+        zone_source_preference:
+            Optional explicit zone source mode (`AUTO`, `ELECTRIC`,
+            `GAS_FURNACE`) for learned controllers or evaluation policies.
         """
         current_actions = current_actions or {}
         target_temps = target_temps or {}
+        room_intents = room_intents or {}
+        source_preference = (
+            ZoneSourceMode.AUTO
+            if zone_source_preference is None
+            else normalize_zone_source_mode(zone_source_preference)
+        )
 
         # Step 1 — baseline per-room decisions (always computed for context)
         per_room_decisions: Dict[str, ControlDecision] = {}
@@ -159,6 +178,7 @@ class HybridController:
                 current_action=current_actions.get(room_id, 0.0),
                 outside_temp=outside_temp,
                 target_temp=target_temps.get(room_id),
+                room_intent=room_intents.get(room_id),
             )
             per_room_decisions[room_id] = decision
 
@@ -190,12 +210,18 @@ class HybridController:
         )
 
         # Step 4 — choose source
-        use_furnace = (
+        auto_furnace = (
             self.zone_config.has_furnace
             and bool(rooms_needing_heat)
             and zone_demand > 0.01
             and furnace_cost < electric_cost
         )
+        if source_preference == ZoneSourceMode.GAS_FURNACE:
+            use_furnace = self.zone_config.has_furnace and bool(rooms_needing_heat) and zone_demand > 0.01
+        elif source_preference == ZoneSourceMode.ELECTRIC:
+            use_furnace = False
+        else:
+            use_furnace = auto_furnace
 
         if use_furnace:
             heat_source = HeatSourceType.GAS_FURNACE
@@ -208,8 +234,9 @@ class HybridController:
             rationale = (
                 f"Gas furnace selected for zone '{self.zone_config.zone_id}'. "
                 f"{len(rooms_needing_heat)} of {len(self.room_configs)} room(s) need heat. "
-                f"Furnace cost (${furnace_cost:.4f}/hr) is lower than "
-                f"electric total (${electric_cost:.4f}/hr). "
+                f"Requested source mode: {source_preference.value}. "
+                f"Projected furnace cost (${furnace_cost:.4f}/hr) vs electric total "
+                f"(${electric_cost:.4f}/hr). "
                 f"All zone rooms share a {action_name_for_power_level(zone_demand)}-like "
                 f"demand ({zone_demand:.2f})."
             )
@@ -221,12 +248,17 @@ class HybridController:
             }
             chosen_cost = electric_cost
             if self.zone_config.has_furnace:
+                source_note = ""
+                if source_preference == ZoneSourceMode.ELECTRIC:
+                    source_note = " Electric mode was requested explicitly."
+                elif source_preference == ZoneSourceMode.AUTO:
+                    source_note = " AUTO mode kept electric because it was cheaper."
                 rationale = (
                     f"Electric heaters selected for zone '{self.zone_config.zone_id}'. "
                     f"{len(rooms_needing_heat)} of {len(self.room_configs)} room(s) need heat. "
-                    f"Electric total (${electric_cost:.4f}/hr) is lower than "
-                    f"furnace cost (${furnace_cost:.4f}/hr). "
-                    f"Each room keeps its individual continuous demand."
+                    f"Projected electric total is ${electric_cost:.4f}/hr versus "
+                    f"${furnace_cost:.4f}/hr for the furnace. "
+                    f"Each room keeps its individual continuous demand.{source_note}"
                 )
             else:
                 rationale = (

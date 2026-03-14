@@ -40,7 +40,7 @@ The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can
 - Dashboard/runtime view models exposing active heat source, requested mode, applied mode, cost, and rationale
 - Zone furnace actuation through `DeviceController`, with room electric heaters forced off when gas heat is selected
 - Pricing provider boundary (`TimeOfUsePriceProvider`, `StaticPriceProvider`, `CallbackPriceProvider`) with offline-safe fallback forecasts
-- Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using continuous zone-source signals and per-room heat demand
+- Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using discrete zone source modes and per-room heating intents, with shared deterministic command resolution underneath
 - Multi-room, multi-zone Gym-compatible training environment plus deterministic synthetic scenario generation for varied schedules and conditions
 - Multi-room observations include per-room occupancy forecast horizons so learned policies can plan against future schedule information
 - Deterministic policy-evaluation helpers for rolling learned or heuristic controllers across the scenario library
@@ -85,7 +85,8 @@ IntelliWarm/
 - `intelliwarm/services/runtime.py`: application orchestration, zone-aware hybrid decisions, and dashboard/runtime state
 - `intelliwarm/core/config.py`: typed config loading for YAML plus `INTELLIWARM_*` environment overrides
 - `intelliwarm/control/hybrid_controller.py`: **zone-level hybrid heating cost engine** — the primary actuator decision point
-- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based baseline with continuous thermostat-style demand
+- `intelliwarm/control/intent_resolver.py`: shared deterministic intent-to-command logic used by baseline, hybrid, simulation, and learned-control paths
+- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based baseline that infers room intents and resolves them into normalized demand
 - `intelliwarm/models/thermal_model.py`: room thermal dynamics
 - `intelliwarm/models/simulator.py`: deterministic multi-room simulation
 - `intelliwarm/prediction/occupancy_model.py`: schedule and timestamp-based occupancy prediction

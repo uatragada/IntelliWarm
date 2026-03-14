@@ -53,7 +53,8 @@ Electric heaters = room-level actuators. Independent per-room control. Cheaper w
 ### Control Layer
 
 - **`intelliwarm/control/hybrid_controller.py`: zone-level hybrid cost decision engine — primary actuator decision point for all zone heating** (see interface below)
-- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based controller; supplies continuous per-room heat demand as inputs to `HybridController`
+- `intelliwarm/control/intent_resolver.py`: shared deterministic translation from room intents / zone source modes into actual normalized heat demand
+- `intelliwarm/control/baseline_controller.py`: per-room explainable rule-based controller; infers room intents from occupancy and temperature, then resolves them through the shared intent logic before `HybridController` compares sources
 - `intelliwarm/optimizer/mpc_controller.py`: continuous MPC (action contracts should converge with the shared normalized-demand runtime contract)
 
 #### HybridController Interface
@@ -69,10 +70,14 @@ class HybridController:
 				electricity_price: float,   # $/kWh — must be live in production
 				gas_price: float,           # $/therm — must be live in production
 				outside_temp: float,
+				room_intents: Optional[Dict[str, object]] = None,
+				zone_source_preference: Optional[object] = None,
 		) -> HybridHeatingDecision
 ```
 
 `HybridHeatingDecision` carries: `furnace_on`, `heat_source`, `per_room_actions`, `per_room_action_labels`, `electric_hourly_cost`, `furnace_hourly_cost`, `chosen_hourly_cost`, `rationale`.
+
+For learned control, PPO should choose high-level room intents and optional zone source modes, while the shared intent resolver computes the actual actuator command. This keeps learned policies aligned with runtime and hardware semantics.
 
 ### Integration Layer
 

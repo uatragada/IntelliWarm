@@ -429,7 +429,7 @@ For each timestep over a finite horizon, minimize:
 
 #### Copilot-ready tasks
 
-1. Define normalized room-demand action space for each room (`0.0..1.0`) with compatibility labels such as `OFF`, `ECO`, `COMFORT`, and `PREHEAT`.
+1. Define a high-level room-intent action space for each room (`OFF`, `PROTECT`, `MAINTAIN`, `PREHEAT`, `RECOVER`) and resolve those intents into normalized room demand through shared deterministic control logic.
 2. Create `ObjectiveWeights` config structure.
 3. Implement temperature rollout over a finite planning horizon.
 4. Implement `score_plan()` for energy, comfort, and switching.
@@ -655,7 +655,7 @@ Status: deterministic Gym-compatible room and multi-room environments, reusable 
 
 #### Prompt for Copilot
 
-> Create a baseline HVAC controller for IntelliWarm that uses occupancy-aware temperature bands. The controller should recommend continuous normalized heat demand from 0 to 1, include compatibility labels such as OFF/ECO/COMFORT/PREHEAT for reporting, and explain each decision in plain language.
+> Create a baseline HVAC controller for IntelliWarm that uses occupancy-aware temperature bands. The controller should infer high-level room intents, resolve them into continuous normalized heat demand from 0 to 1 through shared deterministic logic, include compatibility labels such as OFF/ECO/COMFORT/PREHEAT for reporting, and explain each decision in plain language.
 
 ---
 

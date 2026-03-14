@@ -101,14 +101,15 @@
 ### Gym-Compatible Learning Boundary
 
 - `intelliwarm/learning/gym_env.py` adds a deterministic room-level environment with Gym-compatible `reset()` / `step()` APIs
-- the environment exposes continuous `Box` actions for normalized heat demand
+- the environment exposes discrete room heating intents and resolves them through shared deterministic command logic
 - observations include current temperature, target band, occupancy probability, outdoor temperature, and current gas/electricity prices
 - the environment keeps ML experimentation offline-safe by using the same simulator and pricing contracts as the rest of the platform
 - regression coverage verifies deterministic rollouts and action-label mapping
 
 ### Multi-Room Training Environment And Scenario Library
 
-- `IntelliWarmMultiRoomEnv` adds a padded continuous `Box` action space spanning zone heat-source signals plus per-room heat demand
+- `IntelliWarmMultiRoomEnv` adds a padded `MultiDiscrete` action space spanning zone source modes plus per-room heating intents
+- shared deterministic intent resolution now lives in `intelliwarm/control/intent_resolver.py` and is reused by baseline, hybrid, learning, and runtime paths
 - the environment reuses the deterministic `HouseSimulator` and applies gas-furnace vs. electric semantics at zone scope
 - room observations now include forward occupancy forecast slices for each room without duplicating the current hour
 - invalid furnace requests are penalized explicitly instead of being silently erased from the reward
@@ -204,7 +205,7 @@ The dashboard now exposes the live hybrid heating choice to operators. The next 
 Future ML control work should now build on the implemented room and multi-room training environments plus deterministic evaluation helpers.
 
 - Extend the current CLI/scripts to compare learned policies against hybrid and MPC baselines on the deterministic scenario library
-- Reuse the shared normalized-demand runtime contract so trained policies stay compatible with the live runtime
+- Keep learned policies intent-based so shared deterministic control logic owns the final actuator command and live/runtime semantics remain aligned
 - Support both pure simulation training and offline evaluation against recorded scenarios
 - Keep learned-policy execution behind the same runtime and safety boundaries as other controllers
 

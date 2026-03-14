@@ -10,11 +10,18 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from intelliwarm.control import (
+    HybridController,
+    IntentCommandResolver,
+    RoomHeatingIntent,
+    ZoneSourceMode,
+    normalize_room_intent,
+    normalize_zone_source_mode,
+)
 from intelliwarm.data import (
     action_name_for_power_level,
     clamp_power_level,
     HeatSourceType,
-    HeatingAction,
     RoomConfig,
     SimulationState,
     ZoneConfig,
@@ -78,11 +85,12 @@ except ImportError:  # pragma: no cover - exercised through fallback-compatible 
 class IntelliWarmRoomEnv(gym.Env):
     """Deterministic single-room environment with Gym-compatible reset/step APIs."""
 
-    ACTIONS: List[HeatingAction] = [
-        HeatingAction.OFF,
-        HeatingAction.ECO,
-        HeatingAction.COMFORT,
-        HeatingAction.PREHEAT,
+    INTENTS: List[RoomHeatingIntent] = [
+        RoomHeatingIntent.OFF,
+        RoomHeatingIntent.PROTECT,
+        RoomHeatingIntent.MAINTAIN,
+        RoomHeatingIntent.PREHEAT,
+        RoomHeatingIntent.RECOVER,
     ]
 
     def __init__(
@@ -99,6 +107,9 @@ class IntelliWarmRoomEnv(gym.Env):
         comfort_penalty_weight: float = 10.0,
         energy_weight: float = 1.0,
         switching_weight: float = 0.25,
+        min_temperature: float = 18.0,
+        max_temperature: float = 24.0,
+        preheat_lookahead_steps: int = 2,
     ):
         self.room_config = room_config
         self.thermal_model = thermal_model
@@ -116,13 +127,17 @@ class IntelliWarmRoomEnv(gym.Env):
         self.comfort_penalty_weight = float(comfort_penalty_weight)
         self.energy_weight = float(energy_weight)
         self.switching_weight = float(switching_weight)
-
-        self.action_space = spaces.Box(
-            low=np.array([0.0], dtype=np.float32),
-            high=np.array([1.0], dtype=np.float32),
-            shape=(1,),
-            dtype=np.float32,
+        self.min_temperature = float(min_temperature)
+        self.max_temperature = float(max_temperature)
+        self.preheat_lookahead_steps = max(1, int(preheat_lookahead_steps))
+        self._intent_resolver = IntentCommandResolver(
+            room_config=room_config,
+            min_temperature=min_temperature,
+            max_temperature=max_temperature,
+            preheat_lookahead_steps=preheat_lookahead_steps,
         )
+
+        self.action_space = spaces.Discrete(len(self.INTENTS))
         self.observation_space = spaces.Box(
             low=np.array([-50.0, -50.0, -50.0, 0.0, -50.0, 0.0, 0.0], dtype=np.float32),
             high=np.array([60.0, 60.0, 60.0, 1.0, 60.0, 100.0, 100.0], dtype=np.float32),
@@ -163,13 +178,29 @@ class IntelliWarmRoomEnv(gym.Env):
             dtype=np.float32,
         )
 
-    def _resolve_action(self, action: object) -> float:
+    def _intent_forecast(self) -> List[float]:
+        forecast = [self._current_occupancy()]
+        for lookahead_step in range(1, self.preheat_lookahead_steps + 1):
+            forecast.append(
+                float(
+                    self.occupancy_predictor.predict(
+                        self._current_time + timedelta(minutes=self.step_minutes * lookahead_step)
+                    )
+                )
+            )
+        return forecast
+
+    def _resolve_intent(self, action: object) -> RoomHeatingIntent:
+        if isinstance(action, RoomHeatingIntent):
+            return action
         if isinstance(action, int):
-            return self.ACTIONS[action].power_level
+            return self.INTENTS[action]
+        if isinstance(action, str):
+            return normalize_room_intent(action)
         array = np.asarray(action, dtype=np.float32).reshape(-1)
         if array.size == 0:
-            return 0.0
-        return clamp_power_level(float(array[0]))
+            return RoomHeatingIntent.OFF
+        return normalize_room_intent(int(round(float(array[0]))))
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         if seed is not None:
@@ -182,14 +213,25 @@ class IntelliWarmRoomEnv(gym.Env):
         observation = self._observation()
         return observation, {
             "time": self._current_time.isoformat(),
+            "requested_intent": RoomHeatingIntent.OFF.value,
             "action_label": action_name_for_power_level(self._last_action),
         }
 
     def step(self, action: object):
-        resolved_action = self._resolve_action(action)
+        requested_intent = self._resolve_intent(action)
         prices = self._current_prices()
         outside_temp = self._outside_temp(self._step_index)
         occupancy = self._current_occupancy()
+        resolved_command = self._intent_resolver.resolve(
+            current_temp=self._current_temp,
+            occupancy_forecast=self._intent_forecast(),
+            energy_prices=[float(prices["electricity"])],
+            current_action=self._last_action,
+            outside_temp=outside_temp,
+            target_temp=None,
+            room_intent=requested_intent,
+        )
+        resolved_action = resolved_command.action
 
         next_temp = self.thermal_model.step(
             current_temp=self._current_temp,
@@ -220,10 +262,12 @@ class IntelliWarmRoomEnv(gym.Env):
         truncated = False
         observation = self._observation()
         info = {
+            "requested_intent": requested_intent.value,
             "action_level": resolved_action,
             "action_label": action_name_for_power_level(resolved_action),
             "energy_cost": energy_cost,
             "comfort_violation": comfort_violation,
+            "raw_reward": reward,
             "occupancy_probability": occupancy,
             "outside_temp": outside_temp,
             "electricity_price": float(prices["electricity"]),
@@ -278,10 +322,11 @@ class ScenarioBoundPriceService(EnergyPriceService):
 class IntelliWarmMultiRoomEnv(gym.Env):
     """Deterministic multi-room, multi-zone environment for controller training."""
 
-    ACTIONS: List[HeatingAction] = IntelliWarmRoomEnv.ACTIONS
-    SOURCE_ACTIONS: List[HeatSourceType] = [
-        HeatSourceType.ELECTRIC,
-        HeatSourceType.GAS_FURNACE,
+    ROOM_INTENTS: List[RoomHeatingIntent] = IntelliWarmRoomEnv.INTENTS
+    SOURCE_MODES: List[ZoneSourceMode] = [
+        ZoneSourceMode.AUTO,
+        ZoneSourceMode.ELECTRIC,
+        ZoneSourceMode.GAS_FURNACE,
     ]
 
     def __init__(
@@ -291,8 +336,13 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         energy_weight: float = 1.0,
         switching_weight: float = 0.25,
         invalid_source_penalty: float = 1.0,
+        preoccupancy_penalty_weight: float = 0.0,
+        preoccupancy_lookahead_steps: Optional[int] = None,
         max_forecast_steps: Optional[int] = None,
         comfort_warmup_steps: int = 0,
+        controller_min_temperature: float = 18.0,
+        controller_max_temperature: float = 24.0,
+        controller_preheat_lookahead_steps: int = 2,
     ):
         if not scenarios:
             raise ValueError("At least one training scenario is required")
@@ -302,7 +352,11 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         self.energy_weight = float(energy_weight)
         self.switching_weight = float(switching_weight)
         self.invalid_source_penalty = float(invalid_source_penalty)
+        self.preoccupancy_penalty_weight = float(preoccupancy_penalty_weight)
         self.comfort_warmup_steps = max(0, int(comfort_warmup_steps))
+        self.controller_min_temperature = float(controller_min_temperature)
+        self.controller_max_temperature = float(controller_max_temperature)
+        self.controller_preheat_lookahead_steps = max(1, int(controller_preheat_lookahead_steps))
 
         self.max_rooms = max(len(scenario.room_configs) for scenario in self.scenarios)
         self.max_zones = max(len(scenario.zone_configs) for scenario in self.scenarios)
@@ -313,6 +367,11 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             self.occupancy_forecast_horizon_steps = min(
                 self.occupancy_forecast_horizon_steps, int(max_forecast_steps)
             )
+        self.preoccupancy_lookahead_steps = (
+            self.occupancy_forecast_horizon_steps
+            if preoccupancy_lookahead_steps is None
+            else max(0, int(preoccupancy_lookahead_steps))
+        )
         # Global features: T_out, elec_price, gas_price, hour_sin, hour_cos,
         #                   next_1h_occ_max, next_2h_occ_max  (7 total)
         self._n_global_features = 7
@@ -326,11 +385,9 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             ),
             dtype=np.float32,
         )
-        self.action_space = spaces.Box(
-            low=np.zeros(self.max_zones + self.max_rooms, dtype=np.float32),
-            high=np.ones(self.max_zones + self.max_rooms, dtype=np.float32),
-            shape=(self.max_zones + self.max_rooms,),
-            dtype=np.float32,
+        self.action_space = spaces.MultiDiscrete(
+            [len(self.SOURCE_MODES)] * self.max_zones
+            + [len(self.ROOM_INTENTS)] * self.max_rooms
         )
 
         self._scenario_index = -1
@@ -342,8 +399,9 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         self._current_state: Optional[SimulationState] = None
         self._price_service: Optional[ScenarioBoundPriceService] = None
         self._occupancy_predictors: Dict[str, OccupancyPredictor] = {}
+        self._zone_controllers: Dict[str, HybridController] = {}
         self._step_index = 0
-        self._last_effective_actions: Dict[str, HeatingAction] = {}
+        self._last_effective_actions: Dict[str, float] = {}
         self._last_source_actions: Dict[str, HeatSourceType] = {}
 
     def _build_simulator(self, scenario: TrainingScenario) -> HouseSimulator:
@@ -448,14 +506,21 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         hour = self._current_state.timestamp.hour + self._current_state.timestamp.minute / 60.0
         hour_sin = math.sin(2 * math.pi * hour / 24.0)
         hour_cos = math.cos(2 * math.pi * hour / 24.0)
-        # Lookahead occupancy: maximum probability across all rooms 1 and 2 h ahead.
-        # This gives the policy an explicit "occupancy is coming" signal so it can
-        # schedule preheating during unoccupied early-morning hours.
-        next_1h_time = self._current_state.timestamp + step_td
-        next_2h_time = self._current_state.timestamp + 2 * step_td
+        # Lookahead occupancy: maximum probability across all rooms over the next
+        # 1 h and 2 h windows, not just the next 1-2 environment steps.
+        steps_next_1h = max(1, math.ceil(60 / self._scenario.step_minutes))
+        steps_next_2h = max(steps_next_1h, math.ceil(120 / self._scenario.step_minutes))
         if self._occupancy_predictors:
-            next_1h_occ = max(p.predict(next_1h_time) for p in self._occupancy_predictors.values())
-            next_2h_occ = max(p.predict(next_2h_time) for p in self._occupancy_predictors.values())
+            next_1h_occ = max(
+                predictor.predict(self._current_state.timestamp + step_td * lookahead_step)
+                for predictor in self._occupancy_predictors.values()
+                for lookahead_step in range(1, steps_next_1h + 1)
+            )
+            next_2h_occ = max(
+                predictor.predict(self._current_state.timestamp + step_td * lookahead_step)
+                for predictor in self._occupancy_predictors.values()
+                for lookahead_step in range(1, steps_next_2h + 1)
+            )
         else:
             next_1h_occ = 0.0
             next_2h_occ = 0.0
@@ -473,61 +538,63 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             dtype=np.float32,
         )
 
-    def _normalize_action(self, action: Sequence[float]) -> np.ndarray:
-        values = np.asarray(action, dtype=np.float32).reshape(-1)
+    def _normalize_action(self, action: Sequence[int]) -> np.ndarray:
+        values = np.asarray(action, dtype=np.int64).reshape(-1)
         expected = self.max_zones + self.max_rooms
         if values.size != expected:
             raise ValueError(f"Expected action vector of length {expected}, got {values.size}")
-        return np.clip(values, 0.0, 1.0)
+        nvec = np.asarray(self.action_space.nvec, dtype=np.int64)
+        return np.clip(values, 0, nvec - 1)
 
-    def _resolve_zone_sources(
+    def _resolve_zone_source_modes(
         self,
         action: np.ndarray,
-    ) -> Tuple[Dict[str, HeatSourceType], Dict[str, HeatSourceType], Dict[str, float]]:
+    ) -> Dict[str, ZoneSourceMode]:
         zone_source_indices = list(action[: self.max_zones])
-        requested_sources: Dict[str, HeatSourceType] = {}
-        effective_sources: Dict[str, HeatSourceType] = {}
-        source_signals: Dict[str, float] = {}
+        requested_modes: Dict[str, ZoneSourceMode] = {}
         for zone_index, zone_name in enumerate(self._zone_names):
-            source_signal = clamp_power_level(float(zone_source_indices[zone_index]))
-            requested = (
-                HeatSourceType.GAS_FURNACE
-                if source_signal >= 0.5
-                else HeatSourceType.ELECTRIC
-            )
-            zone_config = self._scenario.zone_configs[zone_name]
-            requested_sources[zone_name] = requested
-            source_signals[zone_name] = source_signal
-            if requested == HeatSourceType.GAS_FURNACE and not zone_config.has_furnace:
-                effective_sources[zone_name] = HeatSourceType.ELECTRIC
-            else:
-                effective_sources[zone_name] = requested
-        return requested_sources, effective_sources, source_signals
+            requested_modes[zone_name] = normalize_zone_source_mode(zone_source_indices[zone_index])
+        return requested_modes
 
-    def _resolve_room_actions(self, action: np.ndarray) -> Dict[str, float]:
+    def _resolve_room_intents(self, action: np.ndarray) -> Dict[str, RoomHeatingIntent]:
         room_action_indices = list(action[self.max_zones : self.max_zones + self.max_rooms])
         return {
-            room_name: clamp_power_level(float(room_action_indices[index]))
+            room_name: normalize_room_intent(room_action_indices[index])
             for index, room_name in enumerate(self._room_names)
         }
 
-    def _effective_room_actions(
-        self,
-        zone_sources: Dict[str, HeatSourceType],
-        requested_room_actions: Dict[str, float],
-    ) -> Dict[str, float]:
-        effective_actions: Dict[str, float] = {}
-        for zone_name, room_names in self._zone_rooms.items():
-            if zone_sources.get(zone_name) == HeatSourceType.GAS_FURNACE:
-                zone_action = max(
-                    (requested_room_actions[room_name] for room_name in room_names),
+    def _occupancy_forecasts(self, current_state: SimulationState) -> Dict[str, List[float]]:
+        assert self._scenario is not None
+        forecasts: Dict[str, List[float]] = {}
+        for room_name in self._room_names:
+            predictor = self._occupancy_predictors.get(room_name)
+            forecast = [float(current_state.occupancy[room_name])]
+            for lookahead_step in range(1, self.occupancy_forecast_horizon_steps + 1):
+                if predictor is None:
+                    forecast.append(0.0)
+                    continue
+                future_time = current_state.timestamp + timedelta(
+                    minutes=self._scenario.step_minutes * lookahead_step
                 )
-                for room_name in room_names:
-                    effective_actions[room_name] = zone_action
-            else:
-                for room_name in room_names:
-                    effective_actions[room_name] = requested_room_actions[room_name]
-        return effective_actions
+                forecast.append(float(predictor.predict(future_time)))
+            forecasts[room_name] = forecast
+        return forecasts
+
+    def _build_zone_controllers(self) -> Dict[str, HybridController]:
+        assert self._scenario is not None
+        return {
+            zone_name: HybridController(
+                zone_config=self._scenario.zone_configs[zone_name],
+                room_configs={
+                    room_name: self._scenario.room_configs[room_name]
+                    for room_name in room_names
+                },
+                min_temperature=self.controller_min_temperature,
+                max_temperature=self.controller_max_temperature,
+                preheat_lookahead_steps=self.controller_preheat_lookahead_steps,
+            )
+            for zone_name, room_names in self._zone_rooms.items()
+        }
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         if seed is not None:
@@ -557,6 +624,7 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             room_name: OccupancyPredictor(room_name, room_config.occupancy_schedule)
             for room_name, room_config in self._scenario.room_configs.items()
         }
+        self._zone_controllers = self._build_zone_controllers()
         self._step_index = 0
         self._last_effective_actions = {
             room_name: 0.0
@@ -587,6 +655,8 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             "max_rooms": self.max_rooms,
             "max_zones": self.max_zones,
             "occupancy_forecast_horizon_steps": self.occupancy_forecast_horizon_steps,
+            "room_intents": [intent.value for intent in self.ROOM_INTENTS],
+            "zone_source_modes": [mode.value for mode in self.SOURCE_MODES],
             "zone_has_furnace": {
                 zone_name: self._scenario.zone_configs[zone_name].has_furnace
                 for zone_name in self._zone_names
@@ -607,9 +677,50 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             occupancy=dict(self._current_state.occupancy),
             heat_sources=dict(self._current_state.heat_sources),
         )
-        requested_zone_sources, zone_sources, zone_source_signals = self._resolve_zone_sources(action_values)
-        requested_room_actions = self._resolve_room_actions(action_values)
-        effective_actions = self._effective_room_actions(zone_sources, requested_room_actions)
+        occupancy_forecasts = self._occupancy_forecasts(current_state)
+        requested_zone_source_modes = self._resolve_zone_source_modes(action_values)
+        requested_room_intents = self._resolve_room_intents(action_values)
+        effective_actions: Dict[str, float] = {}
+        zone_sources: Dict[str, HeatSourceType] = {}
+        zone_decisions = {}
+        for zone_name, room_names in self._zone_rooms.items():
+            controller = self._zone_controllers[zone_name]
+            decision = controller.decide(
+                room_temperatures={
+                    room_name: float(current_state.room_temperatures[room_name])
+                    for room_name in room_names
+                },
+                occupancy_forecasts={
+                    room_name: occupancy_forecasts[room_name]
+                    for room_name in room_names
+                },
+                electricity_price=float(self._current_prices()["electricity"]),
+                gas_price=float(self._current_prices()["gas"]),
+                outside_temp=self._outside_temp(),
+                current_actions={
+                    room_name: self._last_effective_actions[room_name]
+                    for room_name in room_names
+                },
+                target_temps={
+                    room_name: (
+                        self._scenario.room_configs[room_name].target_min_temp
+                        + self._scenario.room_configs[room_name].target_max_temp
+                    ) / 2.0
+                    for room_name in room_names
+                },
+                room_intents={
+                    room_name: requested_room_intents[room_name]
+                    for room_name in room_names
+                },
+                zone_source_preference=requested_zone_source_modes[zone_name],
+            )
+            zone_decisions[zone_name] = decision
+            effective_actions.update({
+                room_name: clamp_power_level(decision.per_room_actions[room_name])
+                for room_name in room_names
+            })
+            zone_sources[zone_name] = decision.heat_source
+
         current_state.heat_sources = {
             room_name: zone_sources[self._scenario.room_configs[room_name].zone]
             for room_name in self._room_names
@@ -626,22 +737,23 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         electric_cost = 0.0
         gas_cost = 0.0
         comfort_violation = 0.0
+        preoccupancy_penalty = 0.0
         switching_penalty = 0.0
         invalid_source_penalty = 0.0
         for zone_name, room_names in self._zone_rooms.items():
             zone_config = self._scenario.zone_configs[zone_name]
             zone_source = zone_sources[zone_name]
-            if requested_zone_sources[zone_name] == HeatSourceType.GAS_FURNACE and not zone_config.has_furnace:
+            zone_decision = zone_decisions[zone_name]
+            if (
+                requested_zone_source_modes[zone_name] == ZoneSourceMode.GAS_FURNACE
+                and not zone_config.has_furnace
+            ):
                 invalid_source_penalty += self.invalid_source_penalty
 
-            zone_power = max((effective_actions[room_name] for room_name in room_names), default=0.0)
-            if zone_source == HeatSourceType.GAS_FURNACE and zone_power > 0.0:
-                gas_cost += zone_config.hourly_gas_cost(float(prices["gas"])) * zone_power
+            if zone_source == HeatSourceType.GAS_FURNACE and zone_decision.furnace_on:
+                gas_cost += float(zone_decision.furnace_hourly_cost)
             else:
-                for room_name in room_names:
-                    electric_cost += (
-                        self._scenario.room_configs[room_name].heater_capacity / 1000.0
-                    ) * effective_actions[room_name] * float(prices["electricity"])
+                electric_cost += float(zone_decision.electric_hourly_cost)
 
             switching_penalty += abs(
                 (1.0 if zone_source == HeatSourceType.GAS_FURNACE else 0.0)
@@ -651,11 +763,29 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         for room_name, room_action in effective_actions.items():
             room_config = self._scenario.room_configs[room_name]
             room_temp = float(next_state.room_temperatures[room_name])
+            current_occupancy = float(current_state.occupancy[room_name])
             occupancy = float(next_state.occupancy[room_name])
             comfort_violation += occupancy * (
                 max(room_config.target_min_temp - room_temp, 0.0)
                 + max(room_temp - room_config.target_max_temp, 0.0)
             )
+            if self.preoccupancy_penalty_weight > 0.0 and self.preoccupancy_lookahead_steps > 0:
+                predictor = self._occupancy_predictors.get(room_name)
+                if predictor is not None and current_occupancy < 1.0:
+                    max_future_occupancy = 0.0
+                    for lookahead_step in range(1, self.preoccupancy_lookahead_steps + 1):
+                        future_time = current_state.timestamp + timedelta(
+                            minutes=self._scenario.step_minutes * lookahead_step
+                        )
+                        future_occupancy = float(predictor.predict(future_time))
+                        urgency = (self.preoccupancy_lookahead_steps - lookahead_step + 1) / (
+                            self.preoccupancy_lookahead_steps
+                        )
+                        max_future_occupancy = max(max_future_occupancy, future_occupancy * urgency)
+                    preoccupancy_penalty += (1.0 - current_occupancy) * max_future_occupancy * max(
+                        room_config.target_min_temp - room_temp,
+                        0.0,
+                    )
             switching_penalty += abs(room_action - self._last_effective_actions[room_name])
 
         total_cost = electric_cost + gas_cost
@@ -665,6 +795,7 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         reward = -(
             (self.energy_weight * total_cost)
             + (warmup_scale * self.comfort_penalty_weight * comfort_violation)
+            + (self.preoccupancy_penalty_weight * preoccupancy_penalty)
             + (self.switching_weight * switching_penalty)
             + invalid_source_penalty
         )
@@ -684,26 +815,26 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         truncated = False
         info = {
             "scenario_name": self._scenario.name,
-            "requested_room_actions": {
-                room_name: action_name_for_power_level(action_level)
-                for room_name, action_level in requested_room_actions.items()
+            "requested_room_intents": {
+                room_name: intent.value
+                for room_name, intent in requested_room_intents.items()
             },
-            "requested_room_power_levels": dict(requested_room_actions),
             "effective_room_actions": {
                 room_name: action_name_for_power_level(action_level)
                 for room_name, action_level in effective_actions.items()
             },
             "effective_room_power_levels": dict(effective_actions),
-            "requested_zone_heat_sources": {
-                zone_name: source.value for zone_name, source in requested_zone_sources.items()
+            "requested_zone_source_modes": {
+                zone_name: mode.value for zone_name, mode in requested_zone_source_modes.items()
             },
             "zone_heat_sources": {zone_name: source.value for zone_name, source in zone_sources.items()},
-            "zone_source_signals": zone_source_signals,
             "electric_cost": electric_cost,
             "gas_cost": gas_cost,
             "total_cost": total_cost,
             "comfort_violation": comfort_violation,
+            "preoccupancy_penalty": preoccupancy_penalty,
             "invalid_source_penalty": invalid_source_penalty,
+            "raw_reward": reward,
             "room_names": list(self._room_names),
             "zone_names": list(self._zone_names),
             "active_rooms": len(self._room_names),

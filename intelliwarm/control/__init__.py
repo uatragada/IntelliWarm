@@ -13,6 +13,17 @@ from .device_controller import (
     SimulatedHeater,
 )
 from .hybrid_controller import HybridController
+from .intent_resolver import (
+    IntentCommandResolver,
+    RoomHeatingIntent,
+    ZoneSourceMode,
+    normalize_room_intent,
+    normalize_zone_source_mode,
+    room_intent_feature_value,
+    room_intent_index,
+    zone_source_mode_feature_value,
+    zone_source_mode_index,
+)
 
 __all__ = [
     "BaselineController",
@@ -20,8 +31,17 @@ __all__ = [
     "DeviceInterface",
     "FurnaceInterface",
     "HardwareDeviceBackend",
+    "IntentCommandResolver",
     "HybridController",
+    "RoomHeatingIntent",
     "SimulatedDeviceBackend",
     "SimulatedFurnace",
     "SimulatedHeater",
+    "ZoneSourceMode",
+    "normalize_room_intent",
+    "normalize_zone_source_mode",
+    "room_intent_feature_value",
+    "room_intent_index",
+    "zone_source_mode_feature_value",
+    "zone_source_mode_index",
 ]

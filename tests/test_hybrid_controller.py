@@ -19,6 +19,7 @@ from intelliwarm.data.models import (
     ZoneConfig,
 )
 from intelliwarm.control.hybrid_controller import HybridController
+from intelliwarm.control.intent_resolver import RoomHeatingIntent, ZoneSourceMode
 
 
 # ---------------------------------------------------------------------------
@@ -299,3 +300,46 @@ def test_hybrid_decision_to_dict_structure():
     assert "rationale" in d
     assert d["heat_source"] in ("electric", "gas_furnace")
     assert all(0.0 <= power <= 1.0 for power in d["per_room_actions"].values())
+
+
+def test_explicit_electric_mode_overrides_cheaper_furnace():
+    zone = _residential_zone(has_furnace=True)
+    rooms = ["bedroom1", "bedroom2", "living_room"]
+    ctrl = _build_controller(zone, rooms, heater_capacity=1500.0)
+
+    result = ctrl.decide(
+        room_temperatures={room_id: 15.0 for room_id in rooms},
+        occupancy_forecasts={room_id: [1.0] * 4 for room_id in rooms},
+        electricity_price=0.30,
+        gas_price=1.20,
+        room_intents={room_id: RoomHeatingIntent.RECOVER for room_id in rooms},
+        zone_source_preference=ZoneSourceMode.ELECTRIC,
+    )
+
+    assert result.furnace_on is False
+    assert result.heat_source == HeatSourceType.ELECTRIC
+    assert "Electric mode was requested explicitly." in result.rationale
+
+
+def test_explicit_recover_intent_is_more_aggressive_than_maintain():
+    zone = _residential_zone(has_furnace=True)
+    ctrl = _build_controller(zone, ["bedroom1"], heater_capacity=1500.0)
+
+    maintain = ctrl.decide(
+        room_temperatures={"bedroom1": 18.5},
+        occupancy_forecasts={"bedroom1": [1.0] * 4},
+        electricity_price=0.15,
+        gas_price=1.20,
+        room_intents={"bedroom1": RoomHeatingIntent.MAINTAIN},
+        zone_source_preference=ZoneSourceMode.ELECTRIC,
+    )
+    recover = ctrl.decide(
+        room_temperatures={"bedroom1": 18.5},
+        occupancy_forecasts={"bedroom1": [1.0] * 4},
+        electricity_price=0.15,
+        gas_price=1.20,
+        room_intents={"bedroom1": RoomHeatingIntent.RECOVER},
+        zone_source_preference=ZoneSourceMode.ELECTRIC,
+    )
+
+    assert recover.per_room_actions["bedroom1"] > maintain.per_room_actions["bedroom1"]

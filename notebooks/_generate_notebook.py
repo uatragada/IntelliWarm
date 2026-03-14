@@ -111,10 +111,14 @@ from collections import defaultdict
 
 # ── IntelliWarm ───────────────────────────────────────────────────────────────
 from intelliwarm.data import (
-    RoomConfig, ZoneConfig, HeatSourceType, HeatingAction, OccupancyWindow,
+    RoomConfig, ZoneConfig, HeatSourceType, OccupancyWindow,
     SimulationState,
 )
-from intelliwarm.control import BaselineController, HybridController
+from intelliwarm.control import (
+    BaselineController, HybridController, RoomHeatingIntent, ZoneSourceMode,
+    room_intent_feature_value, room_intent_index,
+    zone_source_mode_feature_value, zone_source_mode_index,
+)
 from intelliwarm.models import PhysicsRoomThermalModel, HouseSimulator
 from intelliwarm.prediction import OccupancyPredictor
 from intelliwarm.learning.scenario_generator import TrainingScenario, SyntheticScenarioGenerator
@@ -123,6 +127,7 @@ from intelliwarm.learning.gym_env import IntelliWarmMultiRoomEnv
 # ── Gymnasium + SB3 ───────────────────────────────────────────────────────────
 import gymnasium as gym
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 print("✅ All imports OK")
 print(f"   gymnasium {gym.__version__}")
@@ -408,12 +413,12 @@ md("""\
 
 ### PhysicsMultiRoomEnv
 Subclass of `IntelliWarmMultiRoomEnv` that overrides `_build_simulator()` to use
-`PhysicsRoomThermalModel` instead of the legacy first-order model.  The shared
-multi-room observation includes each room's **full 24-hour future occupancy
-forecast** (288 five-minute steps) in addition to current state, so PPO sees
-the same schedule-style signal that the rule-based controllers use. During PPO
-training/evaluation we also append `smart_tou`'s recommended zone-source and
-room-demand signals as teacher features. This gives each room:
+`PhysicsRoomThermalModel` instead of the legacy first-order model. The base
+multi-room environment can expose the full scenario occupancy horizon; this
+notebook caps the forecast to a 2-hour, 24-step window so PPO still sees
+upcoming schedule changes without a huge observation vector. During PPO
+training/evaluation we also append `smart_tou`'s recommended zone-source modes
+and room intents as teacher features. This gives each room:
 - Lumped thermal capacitance **C** [kJ/K] derived from heater design load.
 - Envelope + **infiltration** conductance **UA** [W/K] (ASHRAE 62.2, 0.5 ACH default).
 - Per-room **furnace power share** from `ZoneConfig` (BTU/hr × AFUE ÷ rooms).
@@ -501,8 +506,8 @@ class PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
             raise RuntimeError("smart_tou teacher features requested without a feature function.")
 
         smart_tou_features = np.asarray(self._smart_tou_feature_fn(obs, info), dtype=np.float32)
-        info["smart_tou_zone_signal_offset"] = int(obs.shape[0])
-        info["smart_tou_room_demand_offset"] = int(obs.shape[0] + self.max_zones)
+        info["smart_tou_zone_mode_offset"] = int(obs.shape[0])
+        info["smart_tou_room_intent_offset"] = int(obs.shape[0] + self.max_zones)
         return np.concatenate([obs.astype(np.float32), smart_tou_features]), info
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
@@ -538,11 +543,11 @@ print(f"  Observation: Box{_probe.observation_space.shape} float32")
 print(f"    = {_probe.max_rooms} rooms × 6 state features")
 print(f"    + {_probe.max_rooms} rooms × {_probe.occupancy_forecast_horizon_steps} occupancy-forecast features")
 print(f"    + {_probe.max_zones} zones × 3 features")
-print(f"    + 7 global features  (T_out, elec, gas, hour_sin, hour_cos, next_1h_occ, next_2h_occ)")
-print(f"    + PPO-only teacher features: {_probe.max_zones} smart_tou zone hints + {_probe.max_rooms} smart_tou room-demand hints")
-print(f"  Action:      Box{_probe.action_space.shape} float32")
-print(f"    = {_probe.max_zones} zone source signals  [0..1, >=0.5 ⇒ furnace]")
-print(f"    + {_probe.max_rooms} room heat demands     [0..1 continuous]")
+print(f"    + 7 global features  (T_out, elec, gas, hour_sin, hour_cos, next_1h_occ_max, next_2h_occ_max)")
+print(f"    + Optional PPO teacher features when enabled: {_probe.max_zones} smart_tou zone-mode hints + {_probe.max_rooms} smart_tou room-intent hints")
+print(f"  Action:      MultiDiscrete{tuple(_probe.action_space.nvec.tolist())}")
+print(f"    = {_probe.max_zones} zone source modes  [AUTO, ELECTRIC, GAS_FURNACE]")
+print(f"    + {_probe.max_rooms} room intents       [OFF, PROTECT, MAINTAIN, PREHEAT, RECOVER]")
 print()
 print(f"Initial observation (first episode, winter_workday):")
 print(f"  Scenario  : {info0['scenario_name']}")
@@ -562,13 +567,13 @@ md("""\
 We evaluate five hand-crafted baselines before training to establish cost and
 comfort-violation reference points.
 
-| Policy | Zone source | Room demand | Expected behaviour |
-|--------|------------|-------------|-------------------|
-| **Always OFF** | electric | 0 % | Cheapest energy, worst comfort |
-| **ECO electric** | electric | 35 % constant | Low energy, modest comfort |
-| **COMFORT electric** | electric | thermostat demand | Electric-only continuous thermostat |
-| **Furnace COMFORT** | furnace (where available) | thermostat demand | Furnace zones run with shared continuous demand |
-| **Smart ToU** | adaptive hybrid | thermostat demand | Continuous cost-aware heuristic |
+| Policy | Zone mode | Room intent | Expected behaviour |
+|--------|-----------|-------------|-------------------|
+| **Always OFF** | auto | OFF | Cheapest energy, worst comfort |
+| **ECO electric** | electric | PROTECT | Low energy, modest comfort |
+| **COMFORT electric** | electric | baseline inferred intents | Electric-only intent dispatch |
+| **Furnace COMFORT** | furnace (where available) | baseline inferred intents | Furnace zones run with shared deterministic demand |
+| **Smart ToU** | adaptive hybrid | baseline inferred intents | Intent-aware cost heuristic |
 """)
 
 code("""\
@@ -696,9 +701,9 @@ def _obs_context(obs, info):
     gas_price = float(base_obs[-5])
     return room_context, outside_temp, electricity_price, gas_price
 
-def _baseline_room_demands(obs, info):
+def _baseline_room_intents(obs, info):
     room_context, outside_temp, electricity_price, _ = _obs_context(obs, info)
-    demands = {}
+    intents = {}
     for room_name, ctx in room_context.items():
         decision = BASELINE_CONTROLLERS[room_name].compute_decision(
             current_temp=ctx["temp"],
@@ -708,33 +713,59 @@ def _baseline_room_demands(obs, info):
             outside_temp=outside_temp,
             target_temp=ctx["target"],
         )
-        demands[room_name] = float(decision.action)
-    return demands
+        intents[room_name] = decision.metadata.get("room_intent", RoomHeatingIntent.OFF.value)
+    return intents
 
 def policy_always_off(obs, info):
-    return [0.0] * (info["max_zones"] + info["max_rooms"])
+    return (
+        [zone_source_mode_index(ZoneSourceMode.AUTO)] * info["max_zones"]
+        + [room_intent_index(RoomHeatingIntent.OFF)] * info["max_rooms"]
+    )
 
 def policy_eco_electric(obs, info):
-    return [0.0] * info["max_zones"] + [0.35] * info["max_rooms"]
+    return (
+        [zone_source_mode_index(ZoneSourceMode.ELECTRIC)] * info["max_zones"]
+        + [room_intent_index(RoomHeatingIntent.PROTECT)] * info["max_rooms"]
+    )
 
 def policy_comfort_electric(obs, info):
-    room_demands = _baseline_room_demands(obs, info)
-    return [0.0] * info["max_zones"] + _room_vector(room_demands, info)
+    room_intents = _baseline_room_intents(obs, info)
+    return (
+        [zone_source_mode_index(ZoneSourceMode.ELECTRIC)] * info["max_zones"]
+        + [room_intent_index(room_intents.get(room_name, RoomHeatingIntent.OFF.value)) for room_name in info["room_names"]]
+        + [room_intent_index(RoomHeatingIntent.OFF)] * (info["max_rooms"] - len(info["room_names"]))
+    )
 
 def policy_furnace_comfort(obs, info):
-    \"\"\"Use furnace for furnace-equipped zones with continuous thermostat demand.\"\"\"
-    room_demands = _baseline_room_demands(obs, info)
+    \"\"\"Use furnace mode for furnace-equipped zones with baseline room intents.\"\"\"
+    room_intents = _baseline_room_intents(obs, info)
     zone_src = {
-        zone_name: 1.0 if info.get("zone_has_furnace", {}).get(zone_name, False) else 0.0
+        zone_name: ZoneSourceMode.GAS_FURNACE if info.get("zone_has_furnace", {}).get(zone_name, False) else ZoneSourceMode.ELECTRIC
         for zone_name in _active_zone_names(info)
     }
-    return _zone_vector(zone_src, info) + _room_vector(room_demands, info)
+    return (
+        [zone_source_mode_index(zone_src.get(zone_name, ZoneSourceMode.AUTO)) for zone_name in info["zone_names"]]
+        + [zone_source_mode_index(ZoneSourceMode.AUTO)] * (info["max_zones"] - len(info["zone_names"]))
+        + [room_intent_index(room_intents.get(room_name, RoomHeatingIntent.OFF.value)) for room_name in info["room_names"]]
+        + [room_intent_index(RoomHeatingIntent.OFF)] * (info["max_rooms"] - len(info["room_names"]))
+    )
 
 def _smart_tou_decision(obs, info):
-    \"\"\"Continuous heuristic hybrid controller using the shared zone cost logic.\"\"\"
+    \"\"\"Intent-aware heuristic hybrid controller using the shared zone cost logic.\"\"\"
     room_context, outside_temp, electricity_price, gas_price = _obs_context(obs, info)
-    zone_signals = {}
-    room_demands = {}
+    room_intents = {}
+    for room_name, ctx in room_context.items():
+        decision = BASELINE_CONTROLLERS[room_name].compute_decision(
+            current_temp=ctx["temp"],
+            occupancy_forecast=ctx["forecast"],
+            energy_prices=[electricity_price],
+            current_action=ctx["last_action"],
+            outside_temp=outside_temp,
+            target_temp=ctx["target"],
+        )
+        room_intents[room_name] = decision.metadata.get("room_intent", RoomHeatingIntent.OFF.value)
+
+    zone_modes = {}
     for zone_name in _active_zone_names(info):
         zone_rooms = {
             room_name: ctx
@@ -749,19 +780,41 @@ def _smart_tou_decision(obs, info):
             outside_temp=outside_temp,
             current_actions={room_name: ctx["last_action"] for room_name, ctx in zone_rooms.items()},
             target_temps={room_name: ctx["target"] for room_name, ctx in zone_rooms.items()},
+            room_intents={room_name: room_intents[room_name] for room_name in zone_rooms},
+            zone_source_preference=ZoneSourceMode.AUTO,
         )
-        zone_signals[zone_name] = 1.0 if decision.heat_source == HeatSourceType.GAS_FURNACE else 0.0
-        room_demands.update(decision.per_room_actions)
+        zone_modes[zone_name] = (
+            ZoneSourceMode.GAS_FURNACE
+            if decision.heat_source == HeatSourceType.GAS_FURNACE
+            else ZoneSourceMode.ELECTRIC
+        )
 
-    return zone_signals, room_demands
+    return zone_modes, room_intents
 
 def _smart_tou_feature_vector(obs, info):
-    zone_signals, room_demands = _smart_tou_decision(obs, info)
-    return _zone_vector(zone_signals, info) + _room_vector(room_demands, info)
+    zone_modes, room_intents = _smart_tou_decision(obs, info)
+    return _zone_vector(
+        {
+            zone_name: zone_source_mode_feature_value(mode)
+            for zone_name, mode in zone_modes.items()
+        },
+        info,
+    ) + _room_vector(
+        {
+            room_name: room_intent_feature_value(intent)
+            for room_name, intent in room_intents.items()
+        },
+        info,
+    )
 
 def policy_smart_tou(obs, info):
-    zone_signals, room_demands = _smart_tou_decision(obs, info)
-    return _zone_vector(zone_signals, info) + _room_vector(room_demands, info)
+    zone_modes, room_intents = _smart_tou_decision(obs, info)
+    return (
+        [zone_source_mode_index(zone_modes.get(zone_name, ZoneSourceMode.AUTO)) for zone_name in info["zone_names"]]
+        + [zone_source_mode_index(ZoneSourceMode.AUTO)] * (info["max_zones"] - len(info["zone_names"]))
+        + [room_intent_index(room_intents.get(room_name, RoomHeatingIntent.OFF.value)) for room_name in info["room_names"]]
+        + [room_intent_index(RoomHeatingIntent.OFF)] * (info["max_rooms"] - len(info["room_names"]))
+    )
 
 BASELINE_POLICIES = {
     "always_off":        policy_always_off,
@@ -842,25 +895,28 @@ per-episode metrics back into `output/` for the rest of this notebook.
 
 | Param | Value | Rationale |
 |-------|-------|-----------|
-| `n_steps` | 1 152 | Exactly four 24-hour episodes per environment rollout |
-| `batch_size` | 256 | Mini-batches from the collected rollout |
+| `n_steps` | 288 | One 24-hour episode per environment rollout |
+| `batch_size` | 128 | Mini-batches from the collected rollout |
 | `n_epochs` | 10 | Re-use rollout data for 10 gradient updates |
 | `gamma` | 0.999 | Long planning horizon with 5-minute control intervals |
 | `ent_coef` | 0.02 | Encourages action diversity early; decays with entropy |
 | `learning_rate` | 3e-4 | Standard Adam LR for PPO |
 
 ### Training environment
-- `PhysicsMultiRoomEnv` with `max_forecast_steps=24` (2h occupancy lookahead) and `comfort_warmup_steps=24`.
-- Scenarios cycle round-robin across the 4 parallel workers.
+- `PhysicsMultiRoomEnv` with `max_forecast_steps=24` (2h occupancy lookahead), `comfort_warmup_steps=24`, and `preoccupancy_penalty_weight=30.0`.
+- Workers start on staggered scenarios and then keep cycling round-robin across the scenario library.
 - Each episode lasts exactly **288 steps** (one simulated day at 5-minute resolution).
-- PPO observations append `smart_tou`'s recommended zone source and room demand as teacher features.
-- PPO outputs **continuous** room heat demands in `[0, 1]` plus continuous zone-source
-  signals where `>= 0.5` requests the furnace.
+- PPO observations append `smart_tou`'s recommended zone source mode and room intent as teacher features.
+- PPO outputs **discrete** high-level actions:
+  one source mode per zone (`AUTO`, `ELECTRIC`, `GAS_FURNACE`) and one thermal
+  intent per room (`OFF`, `PROTECT`, `MAINTAIN`, `PREHEAT`, `RECOVER`).
+- Shared deterministic control logic converts those intents into actual normalized
+  room demand and applies the final gas-vs-electric decision.
 
 ### What OPT should learn
 1. **Gas furnace during cold peaks** — furnace is cheaper than running all room heaters.
 2. **Preheat bedrooms before 05:00/06:00** — family wakes up at 05:00–06:00; warm rooms = no penalty.
-3. **Cheap overnight electricity** — run office heater at ECO during cheap hours (≤ 8 ¢/kWh).
+3. **Cheap overnight electricity** — favor `PROTECT` / `MAINTAIN` in the office during cheap hours (≤ 8 ¢/kWh).
 4. **Reduce heating mid-day when unoccupied** — kitchen/living room empty 09:00–17:00 on weekdays.
 """)
 
@@ -889,10 +945,19 @@ def load_training_artifacts():
     with TRAINING_SUMMARY_PATH.open("r", encoding="utf-8") as fh:
         training_summary = json.load(fh)
 
-    model = PPO.load(str(MODEL_PATH))
-    return training_summary, model
+    normalize_path = Path(
+        training_summary.get(
+            "normalize_path",
+            str(OUTPUT_DIR / "opt_policy_vec_normalize.pkl"),
+        )
+    )
+    if not normalize_path.exists():
+        raise FileNotFoundError(f"Missing VecNormalize stats: {normalize_path}")
 
-print("Ready to launch external PPO training and load saved artifacts.")
+    model = PPO.load(str(MODEL_PATH), device="cpu")
+    return training_summary, model, normalize_path
+
+print("Ready to launch external PPO training and load saved artifacts, including VecNormalize stats.")
 """)
 
 code("""\
@@ -928,7 +993,7 @@ if FORCE_RETRAIN or not MODEL_ZIP_PATH.exists() or not TRAINING_SUMMARY_PATH.exi
 else:
     print("Using existing training artifacts. Set FORCE_RETRAIN = True to rerun PPO.")
 
-training_summary, model = load_training_artifacts()
+training_summary, model, NORMALIZE_PATH = load_training_artifacts()
 print(f"\\n✅ Training artifacts loaded")
 print(f"   VecEnv: {training_summary['vec_env_type']}")
 print(f"   Device: {training_summary['device']}")
@@ -940,7 +1005,10 @@ if training_summary["episode_rewards"]:
     r_last = np.mean(training_summary["episode_rewards"][-last_k:])
     c_last = np.mean(training_summary["episode_costs"][-last_k:])
     v_last = np.mean(training_summary["episode_violations"][-last_k:])
-    print(f"   Last {last_k} episodes — reward={r_last:.2f}  cost=${c_last:.4f}  violation={v_last:.3f}")
+    print(f"   Last {last_k} episodes — raw_reward={r_last:.2f}  cost=${c_last:.4f}  violation={v_last:.3f}")
+if training_summary.get("episode_rewards_normalized"):
+    rn_last = np.mean(training_summary["episode_rewards_normalized"][-last_k:])
+    print(f"   Last {last_k} episodes — normalized_reward={rn_last:.2f}")
 """)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -962,7 +1030,7 @@ ep_violations = training_summary["episode_violations"]
 ep_idx = np.arange(len(ep_rewards))
 
 METRICS = [
-    (ep_rewards,    "Episode Reward (↑ better)",          "#1565C0"),
+    (ep_rewards,    "Episode Reward (raw env return, ↑ better)", "#1565C0"),
     (ep_costs,      "Episode Energy Cost $ (↓ better)",   "#AD1457"),
     (ep_violations, "Reported Comfort Violation (↓ better)", "#2E7D32"),
 ]
@@ -976,7 +1044,7 @@ for ax, (data, title, color) in zip(axes, METRICS):
     ax.legend(fontsize=9, loc="upper right" if "Reward" in title else "upper left")
 
 axes[-1].set_xlabel("Training episode", fontsize=11)
-plt.suptitle(f"PPO Training Progress — {TOTAL_TIMESTEPS:,} timesteps, {N_ENVS} parallel envs",
+plt.suptitle(f"PPO Training Progress — {training_summary['total_timesteps']:,} timesteps, {training_summary['n_envs']} parallel envs",
              fontsize=12)
 plt.tight_layout()
 plt.show()
@@ -993,21 +1061,49 @@ We evaluate the trained PPO policy on all three scenarios (deterministic greedy,
 """)
 
 code("""\
-# ── Trained policy wrapper ────────────────────────────────────────────────────
-_last_info: dict = {}   # updated each step
+# ── VecNormalize-aware trained-policy evaluation ──────────────────────────────
+def _make_trained_eval_vec_env(scenario: TrainingScenario):
+    vec_env = DummyVecEnv([
+        lambda: _make_eval_env(scenario, include_smart_tou_features=True)
+    ])
+    vec_env = VecNormalize.load(str(NORMALIZE_PATH), vec_env)
+    vec_env.training = False
+    vec_env.norm_reward = False
+    return vec_env
 
-def policy_trained_opt(obs: np.ndarray, info: dict) -> list:
-    \"\"\"Deterministic greedy action from the trained PPO policy.\"\"\"
-    action, _ = model.predict(obs.reshape(1, -1), deterministic=True)
-    return action[0].tolist()
+
+def _evaluate_trained_opt_scenario(scenario: TrainingScenario):
+    vec_env = _make_trained_eval_vec_env(scenario)
+    obs = vec_env.reset()
+    total_reward = total_cost = total_violation = 0.0
+    while True:
+        action, _ = model.predict(obs, deterministic=True)
+        obs, rewards, dones, infos = vec_env.step(action)
+        info = infos[0]
+        total_reward += float(rewards[0])
+        total_cost += float(info.get("total_cost", 0.0))
+        total_violation += float(info.get("comfort_violation", 0.0))
+        if bool(dones[0]):
+            break
+    vec_env.close()
+    return total_reward, total_cost, total_violation
+
+
+def eval_trained_opt_all_scenarios(name: str = "trained_opt"):
+    results = {"name": name}
+    for scenario in SCENARIOS:
+        r, c, v = _evaluate_trained_opt_scenario(scenario)
+        results[scenario.name] = {
+            "reward": r,
+            "cost": c,
+            "violation": v,
+        }
+    return results
+
 
 # ── Evaluate ──────────────────────────────────────────────────────────────────
-print("Evaluating trained OPT policy …")
-trained_results = eval_policy_all_scenarios(
-    "trained_opt",
-    policy_trained_opt,
-    include_smart_tou_features=True,
-)
+print("Evaluating trained OPT policy with saved VecNormalize stats …")
+trained_results = eval_trained_opt_all_scenarios()
 
 all_results = dict(baseline_results)
 all_results["trained_opt"] = trained_results
@@ -1131,7 +1227,59 @@ def full_rollout(policy_fn, scenario_name: str, seed: int = 0, include_smart_tou
         "violations": step_violations,
     }
 
-rollout_opt  = full_rollout(policy_trained_opt,  "winter_workday", include_smart_tou_features=True)
+def full_rollout_trained_opt(scenario_name: str, seed: int = 0):
+    \"\"\"Run one deterministic episode for the PPO policy using saved VecNormalize stats.\"\"\"
+    target = next(s for s in SCENARIOS if s.name == scenario_name)
+    vec_env = _make_trained_eval_vec_env(target)
+    raw_env = vec_env.venv.envs[0]
+    obs = vec_env.reset()
+
+    room_names_sorted = sorted(target.room_configs.keys())
+    zone_names_sorted = sorted(target.zone_configs.keys())
+    temps   = {r: [target.initial_temperatures[r]] for r in room_names_sorted}
+    actions = {r: [] for r in room_names_sorted}
+    sources = {z: [] for z in zone_names_sorted}
+    step_costs_elec = []
+    step_costs_gas  = []
+    step_violations = []
+    elapsed_hours = np.arange(target.horizon_steps) * (target.step_minutes / 60.0)
+
+    while True:
+        action, _ = model.predict(obs, deterministic=True)
+        obs, rewards, dones, infos = vec_env.step(action)
+        info = infos[0]
+
+        for room_name in room_names_sorted:
+            temps[room_name].append(float(raw_env._current_state.room_temperatures[room_name]))
+            actions[room_name].append(float(raw_env._last_effective_actions[room_name]))
+
+        zone_src_info = info.get("zone_heat_sources", {})
+        for zone_name in zone_names_sorted:
+            sources[zone_name].append(
+                1 if zone_src_info.get(zone_name, "electric") == "gas_furnace" else 0
+            )
+
+        step_costs_elec.append(info.get("electric_cost", 0.0))
+        step_costs_gas.append(info.get("gas_cost", 0.0))
+        step_violations.append(info.get("comfort_violation", 0.0))
+
+        if bool(dones[0]):
+            break
+
+    vec_env.close()
+    return {
+        "room_names": room_names_sorted,
+        "zone_names": zone_names_sorted,
+        "temps": temps,
+        "actions": actions,
+        "sources": sources,
+        "elapsed_hours": elapsed_hours,
+        "elec_cost": step_costs_elec,
+        "gas_cost":  step_costs_gas,
+        "violations": step_violations,
+    }
+
+rollout_opt  = full_rollout_trained_opt("winter_workday")
 rollout_base = full_rollout(policy_comfort_electric, "winter_workday")
 print("✅ Rollouts complete")
 """)
@@ -1285,10 +1433,12 @@ md("## 💾 10. Save & Reload Model")
 
 code("""\
 print(f"Model artifact already saved by the training script: {MODEL_ZIP_PATH}")
-loaded_model = PPO.load(str(MODEL_PATH))
-obs_test, info_test = _make_eval_env(winter_workday, include_smart_tou_features=True).reset(seed=99)
+loaded_model = PPO.load(str(MODEL_PATH), device="cpu")
+loaded_vec_env = _make_trained_eval_vec_env(winter_workday)
+obs_test = loaded_vec_env.reset()
 a, _ = loaded_model.predict(obs_test, deterministic=True)
-print(f"✅ Reload OK — sample action: {a.tolist()}")
+loaded_vec_env.close()
+print(f"✅ Reload OK with VecNormalize — sample action: {a[0].tolist()}")
 """)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1299,18 +1449,21 @@ md("""\
 
 ### What was trained
 A **PPO policy** for a 3-zone, 5-room family house that jointly decides:
-- **Zone heat source** (gas furnace vs electric, per zone, every 5 minutes)
-- **Room heating demand** (continuous 0–100 %, per room, every 5 minutes)
+- **Zone source mode** (`AUTO`, `ELECTRIC`, or `GAS_FURNACE`, per zone, every 5 minutes)
+- **Room thermal intent** (`OFF`, `PROTECT`, `MAINTAIN`, `PREHEAT`, or `RECOVER`, per room, every 5 minutes)
+
+Those high-level actions are then resolved by shared deterministic control logic into
+the actual normalized room heat command and the final gas-vs-electric actuation.
 
 ### Reward design
 | Component | Weight | Effect |
 |-----------|--------|--------|
 | Energy cost (electric + gas) | 1.0 | Agent minimises energy spend |
-| Comfort violation (occ × ΔT) | 25.0 | Penalises cold rooms during occupancy |
+| Comfort violation (occ × ΔT) | 5.0 | Penalises cold rooms during occupancy |
 | Pre-occupancy penalty (wrapper) | 30.0 / °C | Extra signal to preheat *before* arrival |
-| Switching penalty | 0.1 | Smooth action transitions |
+| Switching penalty | 0.05 | Smooth action transitions |
 
-### Key learned behaviours (typical)
+### Target behaviours to check during evaluation
 - Turns on Sleeping-zone furnace around **03:00–05:00** before the family wakes up.
 - Switches Main-zone furnace off mid-day when kitchen/living room are empty.
 - Uses cheap overnight electricity (≤ 8 ¢/kWh) for the home office preheat.
@@ -1318,7 +1471,7 @@ A **PPO policy** for a 3-zone, 5-room family house that jointly decides:
 
 ### Next steps
 1. **Longer training** — increase `TOTAL_TIMESTEPS` only if the learning curves still improve beyond 100k.
-2. **VecNormalize** — wrap the VecEnv with `VecNormalize` for observation/reward normalisation.
+2. **Checkpoint selection** — compare multiple saved checkpoints on the deterministic scenario suite instead of trusting the latest one by default.
 3. **Live price integration** — replace synthetic price profiles with real time-of-use tariffs.
 4. **Hardware deployment** — feed the trained policy into `IntelliWarmRuntime` as a controller type.
 5. **Curriculum learning** — start with easy (spring) scenarios, progressively introduce cold winter days.
@@ -1348,5 +1501,5 @@ out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opt_heating
 with open(out_path, "w", encoding="utf-8") as fh:
     json.dump(notebook, fh, indent=1, ensure_ascii=False)
 
-print(f"✅ Notebook written: {out_path}")
+print(f"Notebook written: {out_path}")
 print(f"   Cells: {len(cells)}")

@@ -212,7 +212,7 @@ class TestBaselineController:
         )
 
         assert 0.85 <= decision.action <= 1.0
-        assert "occupied" in decision.rationale.lower()
+        assert decision.metadata["room_intent"] == "recover"
         assert decision.to_dict()["next_action_label"] == "PREHEAT"
 
     def test_baseline_selects_off_when_unoccupied_and_warm(self):
@@ -228,7 +228,8 @@ class TestBaselineController:
         )
 
         assert decision.action <= 0.05
-        assert any("unoccupied" in reason.lower() for reason in decision.reasons)
+        assert decision.metadata["room_intent"] == "off"
+        assert any("turning heat off" in reason.lower() for reason in decision.reasons)
 
     def test_baseline_holds_previous_action_to_reduce_chatter(self):
         controller = self._controller()
@@ -243,6 +244,7 @@ class TestBaselineController:
         )
 
         assert 0.20 <= decision.action <= 0.35
+        assert decision.metadata["room_intent"] == "off"
         assert decision.to_dict()["next_action_label"] == "ECO"
         assert any("chatter" in reason.lower() for reason in decision.reasons)
 

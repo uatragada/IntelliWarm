@@ -9,11 +9,16 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from intelliwarm.data import clamp_power_level, HeatSourceType, HeatingAction
+from intelliwarm.control import (
+    RoomHeatingIntent,
+    ZoneSourceMode,
+    room_intent_index,
+    zone_source_mode_index,
+)
 from .gym_env import IntelliWarmMultiRoomEnv
 
 
-PolicyFn = Callable[[np.ndarray, Dict], Sequence[float]]
+PolicyFn = Callable[[np.ndarray, Dict], Sequence[int]]
 
 
 @dataclass(frozen=True)
@@ -52,22 +57,22 @@ class PolicyEvaluationSummary:
 
 
 def constant_policy(
-    room_action: object = HeatingAction.ECO,
-    zone_source: HeatSourceType = HeatSourceType.ELECTRIC,
+    room_intent: object = RoomHeatingIntent.PROTECT,
+    zone_source: object = ZoneSourceMode.ELECTRIC,
 ) -> PolicyFn:
     """Build a constant policy compatible with the multi-room environment."""
 
-    zone_value = 1.0 if zone_source == HeatSourceType.GAS_FURNACE else 0.0
-    room_value = clamp_power_level(room_action)
+    zone_value = zone_source_mode_index(zone_source)
+    room_value = room_intent_index(room_intent)
 
-    def _policy(_observation: np.ndarray, info: Dict) -> Sequence[float]:
+    def _policy(_observation: np.ndarray, info: Dict) -> Sequence[int]:
         zone_names = list(info.get("zone_names", []))
         zone_has_furnace = dict(info.get("zone_has_furnace", {}))
-        zone_values = []
+        zone_values: List[int] = []
         for zone_index in range(int(info["max_zones"])):
             zone_name = zone_names[zone_index] if zone_index < len(zone_names) else ""
-            if zone_source == HeatSourceType.GAS_FURNACE and not zone_has_furnace.get(zone_name, False):
-                zone_values.append(0.0)
+            if zone_source == ZoneSourceMode.GAS_FURNACE and not zone_has_furnace.get(zone_name, False):
+                zone_values.append(zone_source_mode_index(ZoneSourceMode.ELECTRIC))
             else:
                 zone_values.append(zone_value)
         return zone_values + [room_value] * int(info["max_rooms"])

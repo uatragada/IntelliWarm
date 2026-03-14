@@ -15,7 +15,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from intelliwarm.control import BaselineController, HybridController
+from intelliwarm.control import (
+    BaselineController,
+    HybridController,
+    RoomHeatingIntent,
+    ZoneSourceMode,
+    room_intent_feature_value,
+    zone_source_mode_feature_value,
+)
 from intelliwarm.data import (
     HeatSourceType,
     OccupancyWindow,
@@ -35,6 +42,8 @@ ENV_KWARGS = dict(
     energy_weight=1.0,
     switching_weight=0.05,
     invalid_source_penalty=2.0,
+    preoccupancy_penalty_weight=30.0,
+    preoccupancy_lookahead_steps=24,
     max_forecast_steps=24,
     comfort_warmup_steps=24,
 )
@@ -267,8 +276,8 @@ class PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
         if self._smart_tou_feature_fn is None:
             raise RuntimeError("smart_tou teacher features requested without a feature function.")
         smart_tou_features = np.asarray(self._smart_tou_feature_fn(obs, info), dtype=np.float32)
-        info["smart_tou_zone_signal_offset"] = int(obs.shape[0])
-        info["smart_tou_room_demand_offset"] = int(obs.shape[0] + self.max_zones)
+        info["smart_tou_zone_mode_offset"] = int(obs.shape[0])
+        info["smart_tou_room_intent_offset"] = int(obs.shape[0] + self.max_zones)
         return np.concatenate([obs.astype(np.float32), smart_tou_features]), info
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
@@ -349,8 +358,19 @@ HYBRID_CONTROLLERS = {
 
 def _smart_tou_decision(obs, info):
     room_context, outside_temp, electricity_price, gas_price = _obs_context(obs, info)
-    zone_signals = {}
-    room_demands = {}
+    room_intents = {}
+    for room_name, ctx in room_context.items():
+        decision = BASELINE_CONTROLLERS[room_name].compute_decision(
+            current_temp=ctx["temp"],
+            occupancy_forecast=ctx["forecast"],
+            energy_prices=[electricity_price],
+            current_action=ctx["last_action"],
+            outside_temp=outside_temp,
+            target_temp=ctx["target"],
+        )
+        room_intents[room_name] = decision.metadata.get("room_intent", RoomHeatingIntent.OFF.value)
+
+    zone_modes = {}
     for zone_name in _active_zone_names(info):
         zone_rooms = {room_name: ctx for room_name, ctx in room_context.items() if ROOMS[room_name].zone == zone_name}
         decision = HYBRID_CONTROLLERS[zone_name].decide(
@@ -361,18 +381,38 @@ def _smart_tou_decision(obs, info):
             outside_temp=outside_temp,
             current_actions={room_name: ctx["last_action"] for room_name, ctx in zone_rooms.items()},
             target_temps={room_name: ctx["target"] for room_name, ctx in zone_rooms.items()},
+            room_intents={
+                room_name: room_intents[room_name]
+                for room_name in zone_rooms
+            },
+            zone_source_preference=ZoneSourceMode.AUTO,
         )
-        zone_signals[zone_name] = 1.0 if decision.heat_source == HeatSourceType.GAS_FURNACE else 0.0
-        room_demands.update(decision.per_room_actions)
-    return zone_signals, room_demands
+        zone_modes[zone_name] = (
+            ZoneSourceMode.GAS_FURNACE
+            if decision.heat_source == HeatSourceType.GAS_FURNACE
+            else ZoneSourceMode.ELECTRIC
+        )
+    return zone_modes, room_intents
 
 
 def _smart_tou_feature_vector(obs, info):
-    zone_signals, room_demands = _smart_tou_decision(obs, info)
-    return _zone_vector(zone_signals, info) + _room_vector(room_demands, info)
+    zone_modes, room_intents = _smart_tou_decision(obs, info)
+    return _zone_vector(
+        {
+            zone_name: zone_source_mode_feature_value(mode)
+            for zone_name, mode in zone_modes.items()
+        },
+        info,
+    ) + _room_vector(
+        {
+            room_name: room_intent_feature_value(intent)
+            for room_name, intent in room_intents.items()
+        },
+        info,
+    )
 
 
-def _make_train_env(seed: int = 0):
+def _make_train_env(seed: int = 0, scenario_index: int = 0):
     def _init():
         env = PhysicsMultiRoomEnv(
             scenarios=SCENARIOS,
@@ -380,7 +420,7 @@ def _make_train_env(seed: int = 0):
             smart_tou_feature_fn=_smart_tou_feature_vector,
             **ENV_KWARGS,
         )
-        env.reset(seed=seed)
+        env.reset(seed=seed, options={"scenario_index": scenario_index % len(SCENARIOS)})
         return env
 
     return _init
@@ -389,7 +429,10 @@ def _make_train_env(seed: int = 0):
 def _build_train_vec_env(n_envs: int, force_dummy_vec_env: bool = False):
     from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-    env_fns = [_make_train_env(seed=index) for index in range(n_envs)]
+    env_fns = [
+        _make_train_env(seed=index, scenario_index=index)
+        for index in range(n_envs)
+    ]
     if n_envs <= 1 or force_dummy_vec_env:
         return DummyVecEnv(env_fns), "DummyVecEnv"
 
@@ -397,7 +440,10 @@ def _build_train_vec_env(n_envs: int, force_dummy_vec_env: bool = False):
     try:
         vec_env = SubprocVecEnv(env_fns, start_method="spawn")
         vec_env.reset()
-        test_actions = np.zeros((n_envs,) + vec_env.action_space.shape, dtype=np.float32)
+        if hasattr(vec_env.action_space, "nvec"):
+            test_actions = np.zeros((n_envs, len(vec_env.action_space.nvec)), dtype=np.int64)
+        else:
+            test_actions = np.zeros((n_envs,) + vec_env.action_space.shape, dtype=np.float32)
         vec_env.step(test_actions)
         vec_env.reset()
         return vec_env, "SubprocVecEnv"
@@ -444,9 +490,11 @@ def train_opt_policy(
             self._next_progress = self._progress_interval
             self._started_at = time.time()
             self.ep_rewards: List[float] = []
+            self.ep_rewards_normalized: List[float] = []
             self.ep_costs: List[float] = []
             self.ep_violations: List[float] = []
             self._ep_reward = [0.0] * n_envs
+            self._ep_reward_normalized = [0.0] * n_envs
             self._ep_cost = [0.0] * n_envs
             self._ep_violation = [0.0] * n_envs
 
@@ -470,16 +518,21 @@ def train_opt_policy(
             dones = self.locals.get("dones", [False] * self._n_envs)
             infos = self.locals.get("infos", [{}] * self._n_envs)
             for idx in range(self._n_envs):
-                self._ep_reward[idx] += float(rewards[idx])
+                normalized_reward = float(rewards[idx])
+                raw_reward = float(infos[idx].get("raw_reward", normalized_reward))
+                self._ep_reward[idx] += raw_reward
+                self._ep_reward_normalized[idx] += normalized_reward
                 self._ep_cost[idx] += float(infos[idx].get("total_cost", 0.0))
                 self._ep_violation[idx] += float(
                     infos[idx].get("comfort_violation", 0.0)
                 )
                 if dones[idx]:
                     self.ep_rewards.append(self._ep_reward[idx])
+                    self.ep_rewards_normalized.append(self._ep_reward_normalized[idx])
                     self.ep_costs.append(self._ep_cost[idx])
                     self.ep_violations.append(self._ep_violation[idx])
                     self._ep_reward[idx] = 0.0
+                    self._ep_reward_normalized[idx] = 0.0
                     self._ep_cost[idx] = 0.0
                     self._ep_violation[idx] = 0.0
             if self._text_progress and self.num_timesteps >= self._next_progress:
@@ -512,9 +565,9 @@ def train_opt_policy(
         batch_size=128,
         n_epochs=10,
         learning_rate=3e-4,
-        gamma=0.99,
+        gamma=0.999,
         gae_lambda=0.95,
-        ent_coef=0.01,
+        ent_coef=0.02,
         clip_range=0.20,
         policy_kwargs=dict(net_arch=[256, 256]),
         seed=42,
@@ -537,6 +590,9 @@ def train_opt_policy(
             "parameter_count": parameter_count,
             "elapsed_seconds": float(elapsed_seconds),
             "episode_rewards": [float(value) for value in logger.ep_rewards],
+            "episode_rewards_normalized": [
+                float(value) for value in logger.ep_rewards_normalized
+            ],
             "episode_costs": [float(value) for value in logger.ep_costs],
             "episode_violations": [float(value) for value in logger.ep_violations],
             "model_path": str(model_path.with_suffix(".zip")),

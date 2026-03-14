@@ -1,6 +1,9 @@
 """
 Learning System
-Continuous model improvement through retraining
+Continuous thermal-model retraining utilities.
+
+This module is for fitting room thermal parameters from historical data.
+The PPO policy-training workflow lives in scripts/train_opt_heating_policy.py.
 """
 
 import logging

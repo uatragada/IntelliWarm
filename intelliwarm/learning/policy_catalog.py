@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional
 
-from intelliwarm.data import HeatSourceType, HeatingAction
+from intelliwarm.control import RoomHeatingIntent, ZoneSourceMode
 
 from .evaluation import PolicyEvaluationSummary, constant_policy, evaluate_policy
 from .gym_env import IntelliWarmMultiRoomEnv
@@ -18,24 +18,24 @@ def build_policy_catalog() -> Dict[str, Callable]:
 
     return {
         "eco-electric": constant_policy(
-            room_action=HeatingAction.ECO,
-            zone_source=HeatSourceType.ELECTRIC,
+            room_intent=RoomHeatingIntent.PROTECT,
+            zone_source=ZoneSourceMode.ELECTRIC,
         ),
         "comfort-electric": constant_policy(
-            room_action=HeatingAction.COMFORT,
-            zone_source=HeatSourceType.ELECTRIC,
+            room_intent=RoomHeatingIntent.MAINTAIN,
+            zone_source=ZoneSourceMode.ELECTRIC,
         ),
         "preheat-electric": constant_policy(
-            room_action=HeatingAction.PREHEAT,
-            zone_source=HeatSourceType.ELECTRIC,
+            room_intent=RoomHeatingIntent.PREHEAT,
+            zone_source=ZoneSourceMode.ELECTRIC,
         ),
         "comfort-furnace": constant_policy(
-            room_action=HeatingAction.COMFORT,
-            zone_source=HeatSourceType.GAS_FURNACE,
+            room_intent=RoomHeatingIntent.MAINTAIN,
+            zone_source=ZoneSourceMode.GAS_FURNACE,
         ),
         "preheat-furnace": constant_policy(
-            room_action=HeatingAction.PREHEAT,
-            zone_source=HeatSourceType.GAS_FURNACE,
+            room_intent=RoomHeatingIntent.PREHEAT,
+            zone_source=ZoneSourceMode.GAS_FURNACE,
         ),
     }
 
