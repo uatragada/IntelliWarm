@@ -23,6 +23,7 @@ class BaselineController:
         min_temperature: float,
         max_temperature: float,
         preheat_lookahead_steps: int = 2,
+        unoccupied_setback_temp: Optional[float] = None,
     ):
         self.room_config = room_config
         self.min_temperature = float(min_temperature)
@@ -34,6 +35,7 @@ class BaselineController:
             min_temperature=min_temperature,
             max_temperature=max_temperature,
             preheat_lookahead_steps=preheat_lookahead_steps,
+            unoccupied_setback_temp=unoccupied_setback_temp,
         )
 
     def compute_decision(

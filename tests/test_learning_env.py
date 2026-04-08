@@ -99,6 +99,41 @@ def test_learning_env_step_uses_discrete_action_labels():
     assert info["raw_reward"] == pytest.approx(reward)
 
 
+def test_learning_env_scales_energy_cost_by_step_duration():
+    room_config = RoomConfig.from_legacy_config(
+        "bedroom",
+        {
+            "zone": "Residential",
+            "target_temp": 21,
+            "target_min_temp": 20,
+            "target_max_temp": 22,
+            "heater_power": 1200,
+            "thermal_mass": 0.05,
+            "heating_efficiency": 1.5,
+            "occupancy_schedule": "9-18",
+        },
+    )
+    thermal_model = RoomThermalModel("bedroom", alpha=1.5, beta=0.05)
+    predictor = OccupancyPredictor("bedroom", schedule="9-18")
+    pricing = EnergyPriceService(0.10, 5.0, provider=StaticPriceProvider())
+    env = IntelliWarmRoomEnv(
+        room_config=room_config,
+        thermal_model=thermal_model,
+        occupancy_predictor=predictor,
+        energy_service=pricing,
+        horizon_steps=1,
+        step_minutes=5,
+        start_time=datetime(2026, 3, 11, 9, 0),
+        initial_temp=19.0,
+        outside_temperature_profile=[5.0],
+    )
+    env.reset()
+
+    _, _, _, _, info = env.step(RoomHeatingIntent.RECOVER)
+
+    assert info["energy_cost"] == pytest.approx(0.01, rel=1e-4)
+
+
 def test_learning_env_is_deterministic_for_same_action_sequence():
     first_env = _build_env()
     second_env = _build_env()
@@ -262,6 +297,58 @@ def test_multi_room_env_applies_zone_source_on_same_step():
     assert furnace_step[0] > electric_step[0]
 
 
+def test_train_physics_env_weights_furnace_share_by_room_capacity():
+    room_configs = {
+        "large_room": RoomConfig(
+            room_id="large_room",
+            display_name="Large Room",
+            zone="Residential",
+            target_min_temp=20.0,
+            target_max_temp=22.0,
+            heater_capacity=2000.0,
+            heat_loss_factor=0.02,
+            heating_efficiency=0.85,
+        ),
+        "small_room": RoomConfig(
+            room_id="small_room",
+            display_name="Small Room",
+            zone="Residential",
+            target_min_temp=20.0,
+            target_max_temp=22.0,
+            heater_capacity=1000.0,
+            heat_loss_factor=0.02,
+            heating_efficiency=0.85,
+        ),
+    }
+    zone_config = ZoneConfig(
+        zone_id="Residential",
+        has_furnace=True,
+        furnace_btu_per_hour=60000.0,
+        furnace_efficiency=0.80,
+    )
+    scenario = SyntheticScenarioGenerator().build_scenario(
+        name="weighted-furnace-share",
+        start_time=datetime(2026, 1, 5, 6, 0),
+        room_configs=room_configs,
+        zone_configs={"Residential": zone_config},
+        initial_temperatures={"large_room": 18.0, "small_room": 18.0},
+        outdoor_temperatures=[5.0],
+        electricity_prices=[0.20],
+        gas_prices=[1.20],
+        step_minutes=5,
+    )
+    env = train_opt_heating_policy_script.PhysicsMultiRoomEnv([scenario])
+    env.reset(options={"scenario_name": "weighted-furnace-share"})
+
+    large_room_model = env._simulator.thermal_models["large_room"]
+    small_room_model = env._simulator.thermal_models["small_room"]
+    furnace_total_w = 60000.0 * 0.29307 * 0.80
+
+    assert large_room_model.furnace_power_w == pytest.approx(furnace_total_w * (2.0 / 3.0), rel=1e-4)
+    assert small_room_model.furnace_power_w == pytest.approx(furnace_total_w * (1.0 / 3.0), rel=1e-4)
+    assert large_room_model.furnace_power_w > small_room_model.furnace_power_w
+
+
 def test_multi_room_env_is_deterministic_for_same_scenario_and_actions():
     scenarios = SyntheticScenarioGenerator().default_scenarios()
     first_env = IntelliWarmMultiRoomEnv(scenarios)
@@ -301,6 +388,91 @@ def test_constant_policy_uses_env_action_layout():
         [ZoneSourceMode.GAS_FURNACE, ZoneSourceMode.GAS_FURNACE, ZoneSourceMode.ELECTRIC],
         [RoomHeatingIntent.MAINTAIN, RoomHeatingIntent.MAINTAIN, RoomHeatingIntent.MAINTAIN],
     )
+
+
+def test_multi_room_env_stabilizes_in_band_occupied_rooms_to_maintain():
+    room_configs = {
+        "steady_room": RoomConfig(
+            room_id="steady_room",
+            display_name="Steady Room",
+            zone="Residential",
+            target_min_temp=20.0,
+            target_max_temp=22.0,
+            heater_capacity=1500.0,
+            heat_loss_factor=0.03,
+            heating_efficiency=1.4,
+            occupancy_schedule="8-12",
+            heat_source=HeatSourceType.ELECTRIC,
+        ),
+    }
+    scenario = SyntheticScenarioGenerator().build_scenario(
+        name="steady-occupied",
+        start_time=datetime(2026, 1, 5, 8, 0),
+        room_configs=room_configs,
+        zone_configs={"Residential": ZoneConfig(zone_id="Residential", has_furnace=False)},
+        initial_temperatures={"steady_room": 21.0},
+        outdoor_temperatures=[5.0] * 6,
+        electricity_prices=[0.12] * 6,
+        gas_prices=[1.20] * 6,
+        step_minutes=5,
+    )
+    env = IntelliWarmMultiRoomEnv([scenario])
+    env.reset(options={"scenario_name": "steady-occupied"})
+
+    temperatures = []
+    for _ in range(4):
+        observation, _, terminated, truncated, info = env.step(
+            _env_action([ZoneSourceMode.ELECTRIC], [RoomHeatingIntent.OFF])
+        )
+        temperatures.append(float(observation[0]))
+        assert info["requested_room_intents"]["steady_room"] == "off"
+        assert info["applied_room_intents"]["steady_room"] == "maintain"
+        assert info["room_intent_overrides"]["steady_room"]
+        assert 0.0 < info["effective_room_power_levels"]["steady_room"] < 0.3
+        if terminated or truncated:
+            break
+
+    assert temperatures
+    assert all(20.0 <= temperature <= 22.0 for temperature in temperatures)
+
+
+def test_multi_room_env_does_not_force_maintain_for_empty_in_band_room():
+    room_configs = {
+        "steady_room": RoomConfig(
+            room_id="steady_room",
+            display_name="Steady Room",
+            zone="Residential",
+            target_min_temp=20.0,
+            target_max_temp=22.0,
+            heater_capacity=1500.0,
+            heat_loss_factor=0.03,
+            heating_efficiency=1.4,
+            occupancy_schedule=[],
+            heat_source=HeatSourceType.ELECTRIC,
+        ),
+    }
+    scenario = SyntheticScenarioGenerator().build_scenario(
+        name="steady-empty",
+        start_time=datetime(2026, 1, 5, 8, 0),
+        room_configs=room_configs,
+        zone_configs={"Residential": ZoneConfig(zone_id="Residential", has_furnace=False)},
+        initial_temperatures={"steady_room": 21.0},
+        outdoor_temperatures=[5.0] * 3,
+        electricity_prices=[0.12] * 3,
+        gas_prices=[1.20] * 3,
+        step_minutes=5,
+    )
+    env = IntelliWarmMultiRoomEnv([scenario])
+    env.reset(options={"scenario_name": "steady-empty"})
+
+    _, _, _, _, info = env.step(
+        _env_action([ZoneSourceMode.ELECTRIC], [RoomHeatingIntent.OFF])
+    )
+
+    assert info["requested_room_intents"]["steady_room"] == "off"
+    assert info["applied_room_intents"]["steady_room"] == "off"
+    assert info["room_intent_overrides"] == {}
+    assert info["effective_room_power_levels"]["steady_room"] == pytest.approx(0.0)
 
 
 def test_evaluate_policy_rolls_up_metrics_across_scenarios():
@@ -612,6 +784,91 @@ def test_multi_room_env_reports_preoccupancy_penalty_before_occupancy_begins():
     assert info["preoccupancy_penalty"] > 0.0
     assert info["preoccupancy_penalty"] > info["comfort_violation"]
     assert info["raw_reward"] == pytest.approx(reward)
+
+
+def test_multi_room_env_penalizes_heating_empty_room_without_near_term_demand():
+    room_configs = {
+        "office": RoomConfig(
+            room_id="office",
+            display_name="Office",
+            zone="Office",
+            target_min_temp=20.0,
+            target_max_temp=22.0,
+            heater_capacity=1000.0,
+            heat_loss_factor=0.01,
+            heating_efficiency=0.9,
+            occupancy_schedule=[],
+            heat_source=HeatSourceType.ELECTRIC,
+        ),
+    }
+    zone_configs = {"Office": ZoneConfig(zone_id="Office", has_furnace=False)}
+    scenario = SyntheticScenarioGenerator().build_scenario(
+        name="empty-room-penalty",
+        start_time=datetime(2026, 1, 5, 0, 0),
+        room_configs=room_configs,
+        zone_configs=zone_configs,
+        initial_temperatures={"office": 19.0},
+        outdoor_temperatures=[5.0] * 24,
+        electricity_prices=[0.10] * 24,
+        gas_prices=[1.0] * 24,
+        step_minutes=5,
+    )
+    env_no_penalty = IntelliWarmMultiRoomEnv([scenario], empty_room_penalty_weight=0.0)
+    env_penalty = IntelliWarmMultiRoomEnv([scenario], empty_room_penalty_weight=1.5)
+
+    env_no_penalty.reset(options={"scenario_name": "empty-room-penalty"})
+    _, reward_no, _, _, info_no = env_no_penalty.step(
+        _env_action([ZoneSourceMode.ELECTRIC], [RoomHeatingIntent.RECOVER])
+    )
+
+    env_penalty.reset(options={"scenario_name": "empty-room-penalty"})
+    _, reward_penalty, _, _, info_penalty = env_penalty.step(
+        _env_action([ZoneSourceMode.ELECTRIC], [RoomHeatingIntent.RECOVER])
+    )
+
+    assert info_no["empty_room_penalty"] == pytest.approx(0.0)
+    assert info_penalty["effective_room_power_levels"]["office"] > 0.0
+    assert info_penalty["empty_room_penalty"] > 0.0
+    assert reward_penalty < reward_no
+
+
+def test_multi_room_env_scales_hourly_zone_costs_to_step_costs():
+    room_configs = {
+        "office": RoomConfig(
+            room_id="office",
+            display_name="Office",
+            zone="Office",
+            target_min_temp=20.0,
+            target_max_temp=22.0,
+            heater_capacity=1200.0,
+            heat_loss_factor=0.01,
+            heating_efficiency=0.9,
+            occupancy_schedule=[],
+            heat_source=HeatSourceType.ELECTRIC,
+        ),
+    }
+    zone_configs = {"Office": ZoneConfig(zone_id="Office", has_furnace=False)}
+    scenario = SyntheticScenarioGenerator().build_scenario(
+        name="step-cost-scaling",
+        start_time=datetime(2026, 1, 5, 0, 0),
+        room_configs=room_configs,
+        zone_configs=zone_configs,
+        initial_temperatures={"office": 16.0},
+        outdoor_temperatures=[5.0] * 24,
+        electricity_prices=[0.10] * 24,
+        gas_prices=[1.0] * 24,
+        step_minutes=5,
+    )
+    env = IntelliWarmMultiRoomEnv([scenario])
+    env.reset(options={"scenario_name": "step-cost-scaling"})
+
+    _, _, _, _, info = env.step(
+        _env_action([ZoneSourceMode.ELECTRIC], [RoomHeatingIntent.RECOVER])
+    )
+
+    assert info["gas_cost"] == pytest.approx(0.0)
+    assert info["electric_cost"] == pytest.approx(0.01, rel=1e-4)
+    assert info["total_cost"] == pytest.approx(0.01, rel=1e-4)
 
 
 def test_train_env_workers_start_on_staggered_scenarios():

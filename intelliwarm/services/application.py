@@ -13,7 +13,7 @@ from flask import Flask
 
 from intelliwarm.control import DeviceController
 from intelliwarm.core import SystemConfig, SystemScheduler
-from intelliwarm.pricing import EnergyPriceService
+from intelliwarm.pricing import EnergyPriceService, build_price_provider_from_config
 from intelliwarm.routes import register_route_modules
 from intelliwarm.sensors import SensorManager
 from intelliwarm.storage import Database
@@ -70,7 +70,12 @@ def create_runtime_bootstrap(
         default_device_id=default_device_id,
         default_furnace_id=default_furnace_id,
     )
-    energy_service = EnergyPriceService(config.electricity_price, config.gas_price)
+    price_provider = build_price_provider_from_config(config.energy_config)
+    energy_service = EnergyPriceService(
+        config.electricity_price,
+        config.gas_price,
+        provider=price_provider,
+    )
     forecast_service = ForecastBundleService(energy_service=energy_service)
     scheduler = SystemScheduler()
     runtime = IntelliWarmRuntime(

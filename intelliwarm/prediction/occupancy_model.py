@@ -32,6 +32,9 @@ class OccupancyPredictor:
 
     def predict(self, timestamp: datetime) -> float:
         """Predict occupancy probability for a timestamp."""
+        if not isinstance(self.windows, list):
+            self.windows = list(self.windows)
+
         if not self.windows:
             return 0.5
 

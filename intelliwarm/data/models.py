@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 
 class HeatSourceType(Enum):
@@ -145,6 +145,9 @@ class RoomConfig:
         """Parse legacy schedule formats into occupancy windows."""
         if not schedule:
             return []
+
+        if isinstance(schedule, Iterable) and not isinstance(schedule, (str, bytes, dict, list)):
+            schedule = list(schedule)
 
         if isinstance(schedule, list):
             windows: List[OccupancyWindow] = []

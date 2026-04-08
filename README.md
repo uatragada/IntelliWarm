@@ -39,7 +39,7 @@ The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can
 - Hybrid runtime integration in `IntelliWarmRuntime.optimize_heating_plan()`
 - Dashboard/runtime view models exposing active heat source, requested mode, applied mode, cost, and rationale
 - Zone furnace actuation through `DeviceController`, with room electric heaters forced off when gas heat is selected
-- Pricing provider boundary (`TimeOfUsePriceProvider`, `StaticPriceProvider`, `CallbackPriceProvider`) with offline-safe fallback forecasts
+- Pricing provider boundary (`TimeOfUsePriceProvider`, `StaticPriceProvider`, `CallbackPriceProvider`, `HttpJsonPriceProvider`) with live HTTP JSON support and offline-safe fallback forecasts
 - Gym-compatible training environment in `intelliwarm/learning/gym_env.py` using discrete zone source modes and per-room heating intents, with shared deterministic command resolution underneath
 - Multi-room, multi-zone Gym-compatible training environment plus deterministic synthetic scenario generation for varied schedules and conditions
 - Multi-room observations include per-room occupancy forecast horizons so learned policies can plan against future schedule information
@@ -49,9 +49,9 @@ The repo is being advanced in bounded slices so GitHub Copilot CLI autopilot can
 
 **Immediate next work:**
 
-- Connect the pricing provider boundary to a concrete live vendor/provider for accurate production prices
 - Expand operator-facing comparisons between hybrid, baseline, MPC, and future learned policies
 - Expand the new policy-comparison tooling to include learned-policy checkpoints and runtime-controller baselines
+- Add vendor-specific price-provider presets on top of the configurable live HTTP JSON adapter where deployments need them
 
 ## Repository Map
 
@@ -113,6 +113,8 @@ python app.py
 Then open `http://localhost:5000`.
 
 Configuration is loaded from `configs/config.yaml`. You can override common values with `INTELLIWARM_*` environment variables, and `${ENV_NAME}` placeholders in the YAML are resolved at load time.
+
+For live price feeds, set `energy.provider: http_json` and provide a `current_prices_url` that returns electricity and gas fields. `forecast_prices_url` is optional; when omitted, the current live price is repeated across the forecast horizon. JSON field names are configurable with `current_electricity_path`, `current_gas_path`, `forecast_items_path`, `forecast_electricity_path`, and `forecast_gas_path`. Secrets should use `${ENERGY_PRICE_API_KEY}` or `INTELLIWARM_PRICE_API_KEY`, never hardcoded values. If the live provider fails, runtime pricing falls back to the configured static/time-of-use base prices and marks the price source as fallback.
 
 ## Deployment Intent
 

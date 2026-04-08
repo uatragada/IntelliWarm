@@ -97,6 +97,7 @@
 - offline-safe `TimeOfUsePriceProvider` remains the default runtime behavior
 - `StaticPriceProvider` supports deterministic tests and simple deployments
 - `CallbackPriceProvider` creates a narrow seam for future live vendor integrations without changing runtime callers
+- `HttpJsonPriceProvider` adds a configurable live HTTP JSON integration for gas and electricity prices, with service-level validation, fallback source metadata, and config/env bootstrap wiring
 
 ### Gym-Compatible Learning Boundary
 
@@ -184,13 +185,13 @@ Improvements derived from **Duffie-Beckman** (*Solar Engineering of Thermal Proc
 
 These are the highest-impact integration tasks. Each should be done as a single bounded slice.
 
-### 1. Live Energy Price Integration
+### 1. Utility-Specific Price Provider Presets
 
 The hybrid cost decision is only as good as the energy prices it uses.
 
-- Implement a concrete live gas/electricity provider on top of the pricing provider boundary
-- Keep the static fallback for offline/simulation mode
-- Ensure `HybridController.decide()` always receives current prices, not stale cached values
+- Add utility/vendor-specific presets on top of `HttpJsonPriceProvider` where deployment APIs need custom auth or response parsing
+- Keep the static/time-of-use fallback for offline/simulation mode
+- Keep provider source metadata visible so operators can tell live, cached, and fallback prices apart
 
 ### 2. Dashboard — Historical And Comparative Views
 

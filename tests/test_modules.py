@@ -14,7 +14,13 @@ from datetime import datetime
 from intelliwarm.models import RoomThermalModel
 from intelliwarm.optimizer import MPCController, CostFunction
 from intelliwarm.prediction import OccupancyPredictor
-from intelliwarm.pricing import CallbackPriceProvider, EnergyPriceService, StaticPriceProvider
+from intelliwarm.pricing import (
+    CallbackPriceProvider,
+    EnergyPriceService,
+    HttpJsonPriceProvider,
+    PriceProvider,
+    StaticPriceProvider,
+)
 from intelliwarm.sensors import HardwareSensorBackend, SensorManager
 from intelliwarm.control import BaselineController, DeviceController, HardwareDeviceBackend
 from intelliwarm.core import SystemConfig
@@ -231,11 +237,11 @@ class TestBaselineController:
         assert decision.metadata["room_intent"] == "off"
         assert any("turning heat off" in reason.lower() for reason in decision.reasons)
 
-    def test_baseline_holds_previous_action_to_reduce_chatter(self):
+    def test_baseline_holds_previous_action_near_setback_floor_to_reduce_chatter(self):
         controller = self._controller()
 
         decision = controller.compute_decision(
-            current_temp=20.05,
+            current_temp=18.05,
             occupancy_forecast=[0.1] * 6,
             energy_prices=[0.12] * 6,
             current_action=HeatingAction.ECO.power_level,
@@ -336,6 +342,72 @@ class TestEnergyPricing:
         assert forecast[0]["electricity"] == 0.20
         assert forecast[1]["electricity"] == 1.20
         assert forecast[0]["gas"] == 1.50
+
+    def test_http_json_price_provider_reads_current_and_forecast_prices(self):
+        calls = []
+
+        def fake_get_json(url, headers, timeout):
+            calls.append((url, headers, timeout))
+            if "forecast" in url:
+                return {
+                    "payload": {
+                        "prices": [
+                            {"hour": 8, "power": 0.21, "gas": 1.20},
+                            {"hour": 9, "power": 0.23, "gas": 1.25},
+                        ]
+                    }
+                }
+            return {"rates": {"power": 0.19, "gas": 1.10}}
+
+        provider = HttpJsonPriceProvider(
+            current_url="https://prices.example/current",
+            forecast_url="https://prices.example/forecast?hours={hours}&start_hour={start_hour}",
+            api_key="test-token",
+            api_key_header="x-api-key",
+            current_electricity_path="rates.power",
+            current_gas_path="rates.gas",
+            forecast_items_path="payload.prices",
+            forecast_electricity_path="power",
+            forecast_gas_path="gas",
+            request_timeout_seconds=2.0,
+            http_get_json=fake_get_json,
+        )
+
+        current = provider.get_current_prices(0.12, 5.0)
+        forecast = provider.get_price_forecast(2, datetime(2026, 3, 11, 8, 0), 0.12, 5.0)
+
+        assert current["electricity"] == 0.19
+        assert current["gas"] == 1.10
+        assert current["source"] == "live_http_json"
+        assert forecast[0]["electricity"] == 0.21
+        assert forecast[1]["gas"] == 1.25
+        assert calls[0][1]["x-api-key"] == "test-token"
+        assert calls[0][2] == 2.0
+        assert "hours=2" in calls[1][0]
+
+    def test_energy_price_service_falls_back_when_live_provider_fails(self):
+        class BrokenProvider(PriceProvider):
+            def get_current_prices(self, electricity_price, gas_price):
+                raise RuntimeError("offline")
+
+            def get_price_forecast(self, hours, start_time, electricity_price, gas_price):
+                raise RuntimeError("offline")
+
+        service = EnergyPriceService(
+            0.12,
+            5.0,
+            provider=BrokenProvider(),
+            fallback_provider=StaticPriceProvider(),
+        )
+
+        assert service.get_current_electricity_price() == 0.12
+        assert service.get_current_gas_price() == 5.0
+        assert service.last_price_source == "static_fallback"
+        assert service.last_price_error == "offline"
+
+        forecast = service.get_price_forecast(2, start_time=datetime(2026, 3, 11, 8, 0))
+        assert [point["electricity"] for point in forecast] == [0.12, 0.12]
+        assert all(point["source"] == "static_fallback" for point in forecast)
 
 
 class TestForecastBundleService:

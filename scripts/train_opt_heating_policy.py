@@ -38,14 +38,18 @@ from intelliwarm.prediction import OccupancyPredictor
 STEP_MINUTES = 5
 STEPS_PER_HOUR = 60 // STEP_MINUTES
 ENV_KWARGS = dict(
-    comfort_penalty_weight=5.0,
-    energy_weight=1.0,
+    comfort_penalty_weight=1.0,
+    energy_weight=20,
     switching_weight=0.05,
     invalid_source_penalty=2.0,
-    preoccupancy_penalty_weight=30.0,
+    # Encourage preheating without teaching the policy to camp at comfort
+    # setpoints all day in empty rooms.
+    preoccupancy_penalty_weight=20.0,
+    empty_room_penalty_weight=0.35,
     preoccupancy_lookahead_steps=24,
     max_forecast_steps=24,
     comfort_warmup_steps=24,
+    controller_unoccupied_setback_temp=18.0,
 )
 
 
@@ -243,6 +247,31 @@ class PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
             )
 
     def _build_simulator(self, scenario: TrainingScenario) -> HouseSimulator:
+        zone_furnace_share_fractions: Dict[str, Dict[str, float]] = {}
+        for zone_id in scenario.zone_configs:
+            zone_room_configs = {
+                room_name: room_config
+                for room_name, room_config in scenario.room_configs.items()
+                if room_config.zone == zone_id
+            }
+            if not zone_room_configs:
+                continue
+            total_heater_capacity = sum(
+                max(0.0, float(room_config.heater_capacity))
+                for room_config in zone_room_configs.values()
+            )
+            if total_heater_capacity > 0.0:
+                zone_furnace_share_fractions[zone_id] = {
+                    room_name: float(room_config.heater_capacity) / total_heater_capacity
+                    for room_name, room_config in zone_room_configs.items()
+                }
+            else:
+                equal_share = 1.0 / len(zone_room_configs)
+                zone_furnace_share_fractions[zone_id] = {
+                    room_name: equal_share
+                    for room_name in zone_room_configs
+                }
+
         thermal_models = {}
         for room_name, room_config in scenario.room_configs.items():
             zone_id = room_config.zone
@@ -252,6 +281,7 @@ class PhysicsMultiRoomEnv(IntelliWarmMultiRoomEnv):
                 room_config,
                 zone_config=zone_config,
                 num_zone_rooms=num_zone_rooms,
+                furnace_share_fraction=zone_furnace_share_fractions.get(zone_id, {}).get(room_name),
                 infiltration_ach=self._infiltration_ach,
             )
         occupancy_predictors = {
@@ -589,6 +619,8 @@ def train_opt_policy(
             "device": device_label,
             "parameter_count": parameter_count,
             "elapsed_seconds": float(elapsed_seconds),
+            "step_minutes": int(STEP_MINUTES),
+            "cost_units": "step_dollars",
             "episode_rewards": [float(value) for value in logger.ep_rewards],
             "episode_rewards_normalized": [
                 float(value) for value in logger.ep_rewards_normalized

@@ -3,6 +3,7 @@ Tests for Flask app bootstrap and config-backed startup.
 """
 
 from intelliwarm.control import HardwareDeviceBackend
+from intelliwarm.pricing import HttpJsonPriceProvider
 from intelliwarm.sensors import HardwareSensorBackend
 from intelliwarm.services import create_app, create_runtime_bootstrap
 
@@ -56,6 +57,27 @@ def test_runtime_bootstrap_loads_configured_rooms(tmp_path):
     assert bootstrap.database.db_path.endswith("runtime.db")
     assert isinstance(bootstrap.sensor_manager.backend, HardwareSensorBackend)
     assert isinstance(bootstrap.device_controller.backend, HardwareDeviceBackend)
+
+
+def test_runtime_bootstrap_uses_configured_live_price_provider(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    _write_app_config(config_path)
+    config_text = config_path.read_text(encoding="utf-8")
+    config_text = config_text.replace(
+        "  gas_price: 5.0\n",
+        "  gas_price: 5.0\n"
+        "  provider: http_json\n"
+        "  current_prices_url: \"https://prices.example/current\"\n"
+        "  forecast_prices_url: \"https://prices.example/forecast?hours={hours}\"\n",
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+
+    bootstrap = create_runtime_bootstrap(
+        config_path=str(config_path),
+        database_path=str(tmp_path / "runtime.db"),
+    )
+
+    assert isinstance(bootstrap.energy_service.provider, HttpJsonPriceProvider)
 
 
 def test_create_app_registers_runtime_and_routes(tmp_path):

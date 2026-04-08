@@ -99,6 +99,7 @@ class HybridController:
         min_temperature: float = 18.0,
         max_temperature: float = 24.0,
         preheat_lookahead_steps: int = 2,
+        unoccupied_setback_temp: Optional[float] = None,
     ):
         self.zone_config = zone_config
         self.room_configs = room_configs
@@ -111,6 +112,7 @@ class HybridController:
                 min_temperature=min_temperature,
                 max_temperature=max_temperature,
                 preheat_lookahead_steps=preheat_lookahead_steps,
+                unoccupied_setback_temp=unoccupied_setback_temp,
             )
             for room_id, cfg in room_configs.items()
         }

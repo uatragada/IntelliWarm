@@ -116,11 +116,15 @@ class IntentCommandResolver:
         min_temperature: float,
         max_temperature: float,
         preheat_lookahead_steps: int = 2,
+        unoccupied_setback_temp: Optional[float] = None,
     ):
         self.room_config = room_config
         self.min_temperature = float(min_temperature)
         self.max_temperature = float(max_temperature)
         self.preheat_lookahead_steps = max(1, int(preheat_lookahead_steps))
+        self.unoccupied_setback_temp = float(
+            min_temperature if unoccupied_setback_temp is None else unoccupied_setback_temp
+        )
 
     def resolve(
         self,
@@ -199,6 +203,7 @@ class IntentCommandResolver:
         target = float(target_temp if target_temp is not None else self._default_target_temp())
         comfort_floor = self._comfort_floor()
         comfort_ceiling = self._comfort_ceiling()
+        setback_floor = self._setback_floor()
         next_occupied_step = self._next_occupied_step(forecast)
         occupied_now = occupancy_now >= 0.6
         occupied_soon = next_occupied_step is not None and 0 < next_occupied_step <= self.preheat_lookahead_steps
@@ -213,10 +218,10 @@ class IntentCommandResolver:
         if occupied_soon:
             return RoomHeatingIntent.PREHEAT
 
-        if current_temp < comfort_floor:
+        if current_temp < setback_floor:
             return RoomHeatingIntent.PROTECT
 
-        if outside_temp < 0.0 and current_temp < comfort_floor + 0.5:
+        if outside_temp < 0.0 and current_temp < setback_floor + 0.5:
             return RoomHeatingIntent.PROTECT
 
         if current_temp < target - 0.2 and occupancy_now >= 0.3:
@@ -232,6 +237,12 @@ class IntentCommandResolver:
 
     def _comfort_ceiling(self) -> float:
         return min(self.max_temperature, self.room_config.target_max_temp)
+
+    def _setback_floor(self) -> float:
+        return min(
+            self._comfort_floor(),
+            max(self.min_temperature, self.unoccupied_setback_temp),
+        )
 
     def _next_occupied_step(self, occupancy_forecast: List[float]) -> Optional[int]:
         return next((index for index, value in enumerate(occupancy_forecast) if value >= 0.6), None)
@@ -263,6 +274,7 @@ class IntentCommandResolver:
     ) -> Tuple[float, List[str]]:
         comfort_floor = self._comfort_floor()
         comfort_ceiling = self._comfort_ceiling()
+        setback_floor = self._setback_floor()
         cold_boost = self._cold_outdoor_boost(outside_temp)
         target_gap = max(target_temp - current_temp, 0.0)
         urgency = self._urgency(next_occupied_step)
@@ -274,20 +286,20 @@ class IntentCommandResolver:
             ]
 
         if intent == RoomHeatingIntent.PROTECT:
-            if current_temp < comfort_floor:
-                return clamp_power_level(0.15 + (0.20 * (comfort_floor - current_temp)) + cold_boost), [
-                    "Intent is PROTECT and the room is below the protection floor.",
+            if current_temp < setback_floor:
+                return clamp_power_level(0.15 + (0.20 * (setback_floor - current_temp)) + cold_boost), [
+                    "Intent is PROTECT and the room is below the setback floor.",
                     "Applying a modest hold demand to avoid cold-soak while saving energy.",
                 ]
-            if outside_temp < 0.0 and current_temp < comfort_floor + 0.5:
+            if outside_temp < 0.0 and current_temp < setback_floor + 0.5:
                 return clamp_power_level(
-                    0.08 + (0.15 * (comfort_floor + 0.5 - current_temp)) + (0.5 * cold_boost)
+                    0.08 + (0.15 * (setback_floor + 0.5 - current_temp)) + (0.5 * cold_boost)
                 ), [
-                    "Intent is PROTECT and the room is near the protection floor in cold weather.",
+                    "Intent is PROTECT and the room is near the setback floor in cold weather.",
                     "Adding a small hold demand to reduce freeze-risk and cold-soak.",
                 ]
             return 0.0, [
-                "Intent is PROTECT, but the room is already warm enough to coast.",
+                "Intent is PROTECT, but the room is already above the setback floor.",
                 "Leaving heat off to save energy.",
             ]
 
@@ -362,7 +374,7 @@ class IntentCommandResolver:
         if (
             proposed <= 0.05
             and current >= 0.20
-            and current_temp < self._comfort_floor() + 0.2
+            and current_temp < self._setback_floor() + 0.2
         ):
             return min(current, 0.35), "Holding some heat to avoid chatter near the protection floor."
 

@@ -78,6 +78,46 @@ def test_recover_intent_resolves_to_stronger_command_than_maintain():
     assert recover.action > maintain.action
 
 
+def test_unoccupied_room_can_coast_above_setback_floor():
+    resolver = IntentCommandResolver(
+        room_config=_room_config(),
+        min_temperature=18.0,
+        max_temperature=24.0,
+    )
+
+    command = resolver.resolve(
+        current_temp=19.2,
+        occupancy_forecast=[0.0, 0.0, 0.0],
+        energy_prices=[0.12],
+        current_action=0.0,
+        outside_temp=2.0,
+        target_temp=21.0,
+    )
+
+    assert command.intent == RoomHeatingIntent.OFF
+    assert command.action == 0.0
+
+
+def test_unoccupied_room_still_protects_below_setback_floor():
+    resolver = IntentCommandResolver(
+        room_config=_room_config(),
+        min_temperature=18.0,
+        max_temperature=24.0,
+    )
+
+    command = resolver.resolve(
+        current_temp=17.4,
+        occupancy_forecast=[0.0, 0.0, 0.0],
+        energy_prices=[0.12],
+        current_action=0.0,
+        outside_temp=-4.0,
+        target_temp=21.0,
+    )
+
+    assert command.intent == RoomHeatingIntent.PROTECT
+    assert command.action > 0.0
+
+
 def test_intent_and_source_helpers_accept_legacy_and_scalar_encodings():
     assert normalize_room_intent("comfort") == RoomHeatingIntent.MAINTAIN
     assert normalize_room_intent(3) == RoomHeatingIntent.PREHEAT

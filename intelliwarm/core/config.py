@@ -29,6 +29,11 @@ ENV_OVERRIDE_PATHS = {
     "INTELLIWARM_ENERGY_WEIGHT": ("optimization", "energy_weight"),
     "INTELLIWARM_ELECTRICITY_PRICE": ("energy", "electricity_price"),
     "INTELLIWARM_GAS_PRICE": ("energy", "gas_price"),
+    "INTELLIWARM_PRICE_PROVIDER": ("energy", "provider"),
+    "INTELLIWARM_PRICE_CURRENT_URL": ("energy", "current_prices_url"),
+    "INTELLIWARM_PRICE_FORECAST_URL": ("energy", "forecast_prices_url"),
+    "INTELLIWARM_PRICE_API_KEY": ("energy", "api_key"),
+    "INTELLIWARM_PRICE_API_KEY_HEADER": ("energy", "api_key_header"),
     "INTELLIWARM_DATABASE_PATH": ("database", "path"),
     "INTELLIWARM_ENABLE_DEVICE_CONTROL": ("devices", "enable_control"),
 }
@@ -113,6 +118,22 @@ class OptimizationSettings:
 class EnergySettings:
     electricity_price: float = 0.12
     gas_price: float = 5.0
+    provider: str = "time_of_use"
+    peak_multiplier: float = 1.3
+    off_peak_multiplier: float = 0.8
+    shoulder_multiplier: float = 1.0
+    current_prices_url: str = ""
+    forecast_prices_url: str = ""
+    api_key: str = ""
+    api_key_header: str = ""
+    api_key_prefix: str = ""
+    current_electricity_path: str = "electricity"
+    current_gas_path: str = "gas"
+    forecast_items_path: str = "prices"
+    forecast_hour_path: str = "hour"
+    forecast_electricity_path: str = "electricity"
+    forecast_gas_path: str = "gas"
+    request_timeout_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -254,6 +275,16 @@ class SystemConfig:
         if state.energy.electricity_price < 0 or state.energy.gas_price < 0:
             raise ConfigValidationError("energy prices must be non-negative")
 
+        provider_name = str(state.energy.provider or "").strip().lower().replace("-", "_")
+        if provider_name not in {"time_of_use", "tou", "static", "http_json", "live_http_json", "http", ""}:
+            raise ConfigValidationError("energy.provider must be one of time_of_use, static, or http_json")
+
+        if provider_name in {"http_json", "live_http_json", "http"} and not state.energy.current_prices_url:
+            raise ConfigValidationError("energy.current_prices_url is required when energy.provider is http_json")
+
+        if state.energy.request_timeout_seconds <= 0:
+            raise ConfigValidationError("energy.request_timeout_seconds must be greater than zero")
+
         if state.database.type not in {"sqlite", "postgresql"}:
             raise ConfigValidationError("database.type must be either 'sqlite' or 'postgresql'")
 
@@ -335,6 +366,10 @@ class SystemConfig:
     @property
     def gas_price(self) -> float:
         return self.state.energy.gas_price
+
+    @property
+    def energy_config(self) -> Dict[str, Any]:
+        return asdict(self.state.energy)
 
     @property
     def rooms(self) -> Dict[str, Dict[str, Any]]:

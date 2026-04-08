@@ -467,6 +467,7 @@ class PhysicsRoomThermalModel:
         room_config: object,
         zone_config: Optional[object] = None,
         num_zone_rooms: int = 1,
+        furnace_share_fraction: Optional[float] = None,
         infiltration_ach: float = 0.5,
         solar_tilt_deg: float = 90.0,
         solar_azimuth_deg: float = 0.0,
@@ -494,9 +495,11 @@ class PhysicsRoomThermalModel:
            typical range 0.3–1.5 h⁻¹).
         5. **electric_power_w** — ``heater_capacity`` (rated output).
         6. **furnace_power_w** — from ``zone_config`` when the zone has a
-           furnace::
+           furnace. By default this is split evenly across zone rooms; callers
+           may instead provide ``furnace_share_fraction`` to weight the share
+           by room load::
 
-               BTU/hr × 0.29307 W/(BTU/hr) × AFUE / num_zone_rooms
+               BTU/hr × 0.29307 W/(BTU/hr) × AFUE × share_fraction
 
         7. **Solar aperture** — ``max(0.3, volume^(2/3) × 0.08)`` m².
         8. **solar_tilt_deg / solar_azimuth_deg** — passed through unchanged;
@@ -506,6 +509,10 @@ class PhysicsRoomThermalModel:
             room_config:         A :class:`~intelliwarm.data.RoomConfig`.
             zone_config:         Optional :class:`~intelliwarm.data.ZoneConfig`.
             num_zone_rooms:      Rooms sharing the zone furnace.
+            furnace_share_fraction:
+                                 Optional per-room share of the zone furnace
+                                 output. When omitted, the factory falls back
+                                 to an equal split across ``num_zone_rooms``.
             infiltration_ach:    Air changes per hour [h⁻¹] for infiltration
                                  conductance calculation.
             solar_tilt_deg:      Window tilt [°].  0=horizontal, 90=vertical.
@@ -529,7 +536,12 @@ class PhysicsRoomThermalModel:
             btu_per_hour = float(getattr(zone_config, "furnace_btu_per_hour", 60_000.0))
             efficiency = float(getattr(zone_config, "furnace_efficiency", 0.80))
             furnace_total_w = btu_per_hour * 0.29307 * efficiency
-            furnace_power_w = furnace_total_w / max(1, num_zone_rooms)
+            share_fraction = (
+                max(0.0, min(1.0, float(furnace_share_fraction)))
+                if furnace_share_fraction is not None
+                else 1.0 / max(1, num_zone_rooms)
+            )
+            furnace_power_w = furnace_total_w * share_fraction
 
         return cls(
             room_name=room_id,

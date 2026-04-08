@@ -82,6 +82,7 @@ class ForecastBundleService:
             horizon_steps,
             start_time=resolved_start,
         )
+        price_source = getattr(self.energy_service, "last_price_source", "unknown")
 
         steps = [
             ForecastStep(
@@ -99,7 +100,7 @@ class ForecastBundleService:
             start_time=resolved_start,
             step_minutes=self.step_minutes,
             steps=steps,
-            source="deterministic",
+            source=f"deterministic_weather+{price_source}_pricing",
         )
 
     def override_bundle(

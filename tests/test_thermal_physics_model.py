@@ -600,6 +600,23 @@ class TestFromRoomConfigWithZoneConfig:
         assert model.furnace_power_w == pytest.approx(expected, rel=1e-3)
         assert model.electric_power_w == pytest.approx(1500.0)
 
+    def test_furnace_share_fraction_overrides_equal_split(self):
+        rc = RoomConfig.from_legacy_config(
+            "small_room",
+            {"zone": "Residential", "target_temp": 21,
+             "heater_power": 1000, "thermal_mass": 0.05,
+             "heating_efficiency": 0.85},
+        )
+        model = PhysicsRoomThermalModel.from_room_config(
+            rc,
+            zone_config=self._residential_zone(),
+            num_zone_rooms=2,
+            furnace_share_fraction=0.40,
+        )
+
+        expected = 60_000 * 0.29307 * 0.80 * 0.40
+        assert model.furnace_power_w == pytest.approx(expected, rel=1e-3)
+
     def test_no_furnace_zone_keeps_furnace_power_zero(self):
         rc = RoomConfig.from_legacy_config(
             "office",

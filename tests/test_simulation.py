@@ -46,6 +46,30 @@ def test_occupancy_predictor_supports_timestamp_windows():
     assert predictor.predict(empty_time) == 0.1
 
 
+def test_room_config_parses_iterator_schedule():
+    schedule_iter = iter(
+        [OccupancyWindow(day_of_week=2, start_hour=9, end_hour=17, probability=0.9)]
+    )
+
+    windows = RoomConfig.parse_schedule(schedule_iter)
+
+    assert len(windows) == 1
+    assert windows[0].probability == 0.9
+
+
+def test_occupancy_predictor_recovers_from_iterator_windows():
+    predictor = OccupancyPredictor(
+        "office",
+        schedule=[OccupancyWindow(day_of_week=2, start_hour=9, end_hour=17, probability=0.9)],
+    )
+    predictor.windows = iter(predictor.windows)
+
+    occupied_time = datetime(2026, 3, 11, 10, 0)
+
+    assert predictor.predict(occupied_time) == 0.9
+    assert isinstance(predictor.windows, list)
+
+
 def test_thermal_model_step_matches_equation():
     model = RoomThermalModel("bedroom", alpha=0.8, beta=0.1)
 

@@ -26,6 +26,20 @@ optimization:
 energy:
   electricity_price: 0.12  # $/kWh
   gas_price: 5.0  # $/therm
+  provider: "time_of_use"  # time_of_use | static | http_json
+  # Live HTTP JSON provider settings. Static/time-of-use remain the offline fallback.
+  current_prices_url: ""
+  forecast_prices_url: ""
+  api_key: "${ENERGY_PRICE_API_KEY}"
+  api_key_header: ""
+  api_key_prefix: ""
+  current_electricity_path: "electricity"
+  current_gas_path: "gas"
+  forecast_items_path: "prices"
+  forecast_hour_path: "hour"
+  forecast_electricity_path: "electricity"
+  forecast_gas_path: "gas"
+  request_timeout_seconds: 5
 
 # Rooms Configuration
 rooms:

@@ -28,6 +28,11 @@ optimization:
 energy:
   electricity_price: 0.12
   gas_price: 5.0
+  provider: http_json
+  current_prices_url: "https://prices.example/current"
+  forecast_prices_url: "https://prices.example/forecast?hours={hours}"
+  api_key: "${ENERGY_PRICE_TEST_KEY}"
+  api_key_header: x-api-key
 database:
   path: "${TEST_INTELLIWARM_DB}"
 devices:
@@ -47,6 +52,7 @@ zones:
     )
 
     monkeypatch.setenv("TEST_INTELLIWARM_DB", "env.db")
+    monkeypatch.setenv("ENERGY_PRICE_TEST_KEY", "price-token")
     monkeypatch.setenv("INTELLIWARM_DEBUG", "false")
     monkeypatch.setenv("INTELLIWARM_ELECTRICITY_PRICE", "0.22")
 
@@ -55,6 +61,8 @@ zones:
     assert config.debug is False
     assert config.electricity_price == 0.22
     assert config.database_path == "env.db"
+    assert config.energy_config["provider"] == "http_json"
+    assert config.energy_config["api_key"] == "price-token"
     assert config.get_room_config("office")["target_temp"] == 22
     assert config.zones["Work"]["description"] == "Workspace"
 

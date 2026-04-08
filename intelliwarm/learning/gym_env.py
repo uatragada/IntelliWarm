@@ -104,12 +104,13 @@ class IntelliWarmRoomEnv(gym.Env):
         start_time: Optional[datetime] = None,
         initial_temp: Optional[float] = None,
         outside_temperature_profile: Optional[List[float]] = None,
-        comfort_penalty_weight: float = 10.0,
-        energy_weight: float = 1.0,
+        comfort_penalty_weight: float = 1.0,
+        energy_weight: float = 2.0,
         switching_weight: float = 0.25,
         min_temperature: float = 18.0,
         max_temperature: float = 24.0,
         preheat_lookahead_steps: int = 2,
+        unoccupied_setback_temp: Optional[float] = None,
     ):
         self.room_config = room_config
         self.thermal_model = thermal_model
@@ -135,6 +136,7 @@ class IntelliWarmRoomEnv(gym.Env):
             min_temperature=min_temperature,
             max_temperature=max_temperature,
             preheat_lookahead_steps=preheat_lookahead_steps,
+            unoccupied_setback_temp=unoccupied_setback_temp,
         )
 
         self.action_space = spaces.Discrete(len(self.INTENTS))
@@ -239,9 +241,10 @@ class IntelliWarmRoomEnv(gym.Env):
             heating_power=resolved_action,
             dt_minutes=self.step_minutes,
         )
+        step_hours = self.step_minutes / 60.0
         energy_cost = (
             self.room_config.heater_capacity / 1000.0
-        ) * resolved_action * float(prices["electricity"])
+        ) * resolved_action * float(prices["electricity"]) * step_hours
         comfort_violation = max(self.room_config.target_min_temp - next_temp, 0.0) + max(
             next_temp - self.room_config.target_max_temp,
             0.0,
@@ -332,17 +335,19 @@ class IntelliWarmMultiRoomEnv(gym.Env):
     def __init__(
         self,
         scenarios: List[TrainingScenario],
-        comfort_penalty_weight: float = 10.0,
-        energy_weight: float = 1.0,
+        comfort_penalty_weight: float = 1,
+        energy_weight: float = 1,
         switching_weight: float = 0.25,
         invalid_source_penalty: float = 1.0,
-        preoccupancy_penalty_weight: float = 0.0,
+        preoccupancy_penalty_weight: float = 2.0,
+        empty_room_penalty_weight: float = 0.25,
         preoccupancy_lookahead_steps: Optional[int] = None,
         max_forecast_steps: Optional[int] = None,
         comfort_warmup_steps: int = 0,
         controller_min_temperature: float = 18.0,
         controller_max_temperature: float = 24.0,
         controller_preheat_lookahead_steps: int = 2,
+        controller_unoccupied_setback_temp: Optional[float] = None,
     ):
         if not scenarios:
             raise ValueError("At least one training scenario is required")
@@ -353,10 +358,12 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         self.switching_weight = float(switching_weight)
         self.invalid_source_penalty = float(invalid_source_penalty)
         self.preoccupancy_penalty_weight = float(preoccupancy_penalty_weight)
+        self.empty_room_penalty_weight = float(empty_room_penalty_weight)
         self.comfort_warmup_steps = max(0, int(comfort_warmup_steps))
         self.controller_min_temperature = float(controller_min_temperature)
         self.controller_max_temperature = float(controller_max_temperature)
         self.controller_preheat_lookahead_steps = max(1, int(controller_preheat_lookahead_steps))
+        self.controller_unoccupied_setback_temp = controller_unoccupied_setback_temp
 
         self.max_rooms = max(len(scenario.room_configs) for scenario in self.scenarios)
         self.max_zones = max(len(scenario.zone_configs) for scenario in self.scenarios)
@@ -563,6 +570,51 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             for index, room_name in enumerate(self._room_names)
         }
 
+    def _next_occupied_step(self, occupancy_forecast: Sequence[float]) -> Optional[int]:
+        return next(
+            (index for index, value in enumerate(occupancy_forecast) if float(value) >= 0.6),
+            None,
+        )
+
+    def _stabilize_room_intents(
+        self,
+        requested_room_intents: Dict[str, RoomHeatingIntent],
+        current_state: SimulationState,
+        occupancy_forecasts: Dict[str, List[float]],
+    ) -> Tuple[Dict[str, RoomHeatingIntent], Dict[str, str]]:
+        assert self._scenario is not None
+
+        applied_room_intents = dict(requested_room_intents)
+        override_reasons: Dict[str, str] = {}
+        for room_name, requested_intent in requested_room_intents.items():
+            room_config = self._scenario.room_configs[room_name]
+            current_temp = float(current_state.room_temperatures[room_name])
+            comfort_floor = max(self.controller_min_temperature, room_config.target_min_temp)
+            comfort_ceiling = min(self.controller_max_temperature, room_config.target_max_temp)
+            if not comfort_floor <= current_temp <= comfort_ceiling:
+                continue
+
+            forecast = occupancy_forecasts.get(room_name, [0.0])
+            occupancy_now = float(forecast[0]) if forecast else 0.0
+            next_occupied_step = self._next_occupied_step(forecast)
+            occupied_now = occupancy_now >= 0.6
+            occupied_soon = (
+                next_occupied_step is not None
+                and 0 < next_occupied_step <= self.controller_preheat_lookahead_steps
+            )
+            if not (occupied_now or occupied_soon):
+                continue
+
+            applied_room_intents[room_name] = RoomHeatingIntent.MAINTAIN
+            if requested_intent != RoomHeatingIntent.MAINTAIN:
+                timing_label = "occupied" if occupied_now else "approaching occupancy"
+                override_reasons[room_name] = (
+                    f"Room is already within its comfort band and {timing_label}; "
+                    "holding MAINTAIN to reduce jitter."
+                )
+
+        return applied_room_intents, override_reasons
+
     def _occupancy_forecasts(self, current_state: SimulationState) -> Dict[str, List[float]]:
         assert self._scenario is not None
         forecasts: Dict[str, List[float]] = {}
@@ -592,6 +644,7 @@ class IntelliWarmMultiRoomEnv(gym.Env):
                 min_temperature=self.controller_min_temperature,
                 max_temperature=self.controller_max_temperature,
                 preheat_lookahead_steps=self.controller_preheat_lookahead_steps,
+                unoccupied_setback_temp=self.controller_unoccupied_setback_temp,
             )
             for zone_name, room_names in self._zone_rooms.items()
         }
@@ -680,6 +733,11 @@ class IntelliWarmMultiRoomEnv(gym.Env):
         occupancy_forecasts = self._occupancy_forecasts(current_state)
         requested_zone_source_modes = self._resolve_zone_source_modes(action_values)
         requested_room_intents = self._resolve_room_intents(action_values)
+        applied_room_intents, room_intent_overrides = self._stabilize_room_intents(
+            requested_room_intents=requested_room_intents,
+            current_state=current_state,
+            occupancy_forecasts=occupancy_forecasts,
+        )
         effective_actions: Dict[str, float] = {}
         zone_sources: Dict[str, HeatSourceType] = {}
         zone_decisions = {}
@@ -709,7 +767,7 @@ class IntelliWarmMultiRoomEnv(gym.Env):
                     for room_name in room_names
                 },
                 room_intents={
-                    room_name: requested_room_intents[room_name]
+                    room_name: applied_room_intents[room_name]
                     for room_name in room_names
                 },
                 zone_source_preference=requested_zone_source_modes[zone_name],
@@ -733,11 +791,13 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             dt_minutes=self._scenario.step_minutes,
         )
         prices = self._current_prices()
+        step_hours = self._scenario.step_minutes / 60.0
 
         electric_cost = 0.0
         gas_cost = 0.0
         comfort_violation = 0.0
         preoccupancy_penalty = 0.0
+        empty_room_penalty = 0.0
         switching_penalty = 0.0
         invalid_source_penalty = 0.0
         for zone_name, room_names in self._zone_rooms.items():
@@ -751,9 +811,9 @@ class IntelliWarmMultiRoomEnv(gym.Env):
                 invalid_source_penalty += self.invalid_source_penalty
 
             if zone_source == HeatSourceType.GAS_FURNACE and zone_decision.furnace_on:
-                gas_cost += float(zone_decision.furnace_hourly_cost)
+                gas_cost += float(zone_decision.furnace_hourly_cost) * step_hours
             else:
-                electric_cost += float(zone_decision.electric_hourly_cost)
+                electric_cost += float(zone_decision.electric_hourly_cost) * step_hours
 
             switching_penalty += abs(
                 (1.0 if zone_source == HeatSourceType.GAS_FURNACE else 0.0)
@@ -786,6 +846,12 @@ class IntelliWarmMultiRoomEnv(gym.Env):
                         room_config.target_min_temp - room_temp,
                         0.0,
                     )
+            if self.empty_room_penalty_weight > 0.0:
+                lookahead_steps = max(1, math.ceil(120 / self._scenario.step_minutes))
+                recent_demand_signal = max(
+                    occupancy_forecasts[room_name][: min(len(occupancy_forecasts[room_name]), lookahead_steps + 1)]
+                )
+                empty_room_penalty += clamp_power_level(room_action) * max(0.0, 1.0 - recent_demand_signal)
             switching_penalty += abs(room_action - self._last_effective_actions[room_name])
 
         total_cost = electric_cost + gas_cost
@@ -796,6 +862,7 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             (self.energy_weight * total_cost)
             + (warmup_scale * self.comfort_penalty_weight * comfort_violation)
             + (self.preoccupancy_penalty_weight * preoccupancy_penalty)
+            + (self.empty_room_penalty_weight * empty_room_penalty)
             + (self.switching_weight * switching_penalty)
             + invalid_source_penalty
         )
@@ -819,6 +886,11 @@ class IntelliWarmMultiRoomEnv(gym.Env):
                 room_name: intent.value
                 for room_name, intent in requested_room_intents.items()
             },
+            "applied_room_intents": {
+                room_name: intent.value
+                for room_name, intent in applied_room_intents.items()
+            },
+            "room_intent_overrides": dict(room_intent_overrides),
             "effective_room_actions": {
                 room_name: action_name_for_power_level(action_level)
                 for room_name, action_level in effective_actions.items()
@@ -833,6 +905,7 @@ class IntelliWarmMultiRoomEnv(gym.Env):
             "total_cost": total_cost,
             "comfort_violation": comfort_violation,
             "preoccupancy_penalty": preoccupancy_penalty,
+            "empty_room_penalty": empty_room_penalty,
             "invalid_source_penalty": invalid_source_penalty,
             "raw_reward": reward,
             "room_names": list(self._room_names),
